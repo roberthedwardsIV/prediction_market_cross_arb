@@ -1,6 +1,26 @@
-# markets.csv
+# Prediction Markets Cross Exchange Arbitrage Engine
 
-Assisi loads this file at process start. There is no hot reload: stop the process, edit the file, start again.
+Assisi - an engine that detects & trades upon pricing discrepancies between Kalshi, Polymarket (US) and Gemini prediction market exchanges. 
+
+The engine seeks to purchase the 'cheapest yes' and the 'cheapest no' in cases where two exchanges exhibit price differences (after fees).
+Market data is obtained from public WebSockets and REST APIs, and orders use these same resources. 
+The engine runs almost entirely on C++, with a light frontend UI for more user-friendly controls and observation.
+
+## Latency
+The engine runs with a latency of ***.
+
+## Position Sizing
+The engine sizes positions ***.
+
+## Build & Run Instructions
+
+## Market Universe & Linking
+
+## Live vs. Paper vs. Replay
+
+## Layout
+
+## Known Limitations
 
 ## Daily ritual
 
