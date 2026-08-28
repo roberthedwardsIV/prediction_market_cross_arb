@@ -3,5 +3,6 @@
 *.pem
 *credentials*
 secrets/
-*.csv
 tapes/
+build/
+src/Test
