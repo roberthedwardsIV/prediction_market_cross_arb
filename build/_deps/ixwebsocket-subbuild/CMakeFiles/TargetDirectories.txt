@@ -1,3 +1,0 @@
-/Users/hitchedwards/assisi/build/_deps/ixwebsocket-subbuild/CMakeFiles/ixwebsocket-populate.dir
-/Users/hitchedwards/assisi/build/_deps/ixwebsocket-subbuild/CMakeFiles/edit_cache.dir
-/Users/hitchedwards/assisi/build/_deps/ixwebsocket-subbuild/CMakeFiles/rebuild_cache.dir

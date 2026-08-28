@@ -1,9 +1,0 @@
-{
-	"InstallScripts" : 
-	[
-		"/Users/hitchedwards/assisi/build/cmake_install.cmake",
-		"/Users/hitchedwards/assisi/build/_deps/ixwebsocket-build/cmake_install.cmake",
-		"/Users/hitchedwards/assisi/build/_deps/json-build/cmake_install.cmake"
-	],
-	"Parallel" : false
-}
