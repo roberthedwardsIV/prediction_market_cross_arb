@@ -1,0 +1,1 @@
+/usr/bin/c++ -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/ws_hello.dir/src/ws_hello.cpp.o -o ws_hello  _deps/ixwebsocket-build/libixwebsocket.a /usr/local/Cellar/openssl@3/3.6.3/lib/libcrypto.dylib -framework Foundation -framework Security /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib/libz.tbd

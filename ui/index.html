@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@600;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b1610;
+    --panel: #122018;
+    --line: #2c4638;
+    --gold: #c9a227;
+    --gold2: #e8d5a3;
+    --text: #f7f4ec;
+    --dim: #a9b8ae;
+    --green: #8fbfa3;
+    --red: #d97b6c;
+    --ink: #0b1610;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "IBM Plex Mono", "Consolas", "Courier New", monospace;
+    font-size: 12px;
+    letter-spacing: 0.02em;
+  }
+  header {
+    display: flex; align-items: center; gap: 18px;
+    height: 40px; padding: 0 14px;
+    border-bottom: 1px solid var(--gold);
+    background: #102018;
+  }
+  .brand {
+    color: var(--gold);
+    font-family: "Cormorant Garamond", "Times New Roman", serif;
+    font-weight: 700;
+    font-size: 20px;
+    letter-spacing: 0.22em;
+  }
+  .pill { border: 1px solid var(--line); padding: 2px 8px; color: var(--dim); }
+  .pill.on { border-color: var(--green); color: var(--green); }
+  .pill.work { border-color: var(--gold); color: var(--gold); }
+  .clock { margin-left: auto; color: var(--gold2); }
+  button.start {
+    margin-left: 8px;
+    background: transparent;
+    border: 1px solid var(--gold);
+    color: var(--gold);
+    font-family: inherit;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    padding: 3px 12px;
+    cursor: pointer;
+  }
+  button.start:hover { background: #1a2e24; }
+  button.start:disabled { border-color: var(--line); color: var(--dim); cursor: default; }
+  button.stop {
+    margin-left: 8px;
+    background: transparent;
+    border: 1px solid var(--red);
+    color: var(--red);
+    font-family: inherit;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    padding: 3px 12px;
+    cursor: pointer;
+  }
+  button.stop:hover { background: #2a1816; }
+  button.stop:disabled { border-color: var(--line); color: var(--dim); cursor: default; }
+  main {
+    display: grid;
+    grid-template-columns: 280px 1fr 320px;
+    grid-template-rows: 150px 1fr 180px;
+    gap: 6px; padding: 6px; height: calc(100% - 40px);
+  }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  h2 {
+    margin: 0; padding: 4px 8px;
+    font-size: 10px; letter-spacing: 0.16em;
+    color: var(--ink); background: var(--gold); font-weight: 700;
+  }
+  .cash { grid-column: 1; grid-row: 1; }
+  .pos { grid-column: 1; grid-row: 2; }
+  .books { grid-column: 2; grid-row: 1 / 3; }
+  .side { grid-column: 3; grid-row: 1 / 3; }
+  .log { grid-column: 1 / 4; grid-row: 3; }
+  .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; padding: 8px; flex: 1; }
+  .m { padding: 8px; border: 1px solid var(--line); }
+  .m label { display: block; color: var(--dim); font-size: 10px; letter-spacing: 0.12em; }
+  .m b { display: block; font-size: 20px; color: var(--gold2); margin-top: 4px; font-weight: 500; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--dim); font-size: 10px; letter-spacing: 0.1em; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 4px 8px; border-bottom: 1px solid #1b2c22; white-space: nowrap; }
+  tr.arb td { color: var(--gold2); }
+  tr.expired td { color: var(--dim); }
+  .scroll { overflow: auto; flex: 1; }
+  #log { padding: 6px 8px; color: var(--green); line-height: 1.45; }
+  .kv { padding: 8px; line-height: 1.7; }
+  .kv span { color: var(--dim); }
+  .kv b { color: var(--text); font-weight: 500; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">ASSISI</div>
+  <div id="live" class="pill">LIVE</div>
+  <div id="prod" class="pill">KALSHI</div>
+  <div id="work" class="pill">IDLE</div>
+  <div id="trade" class="pill">STANDBY</div>
+  <button id="start" class="start" type="button">START</button>
+  <button id="stop" class="stop" type="button" disabled>STOP</button>
+  <div class="clock" id="clock"></div>
+</header>
+<main>
+  <section class="cash">
+    <h2>CASH</h2>
+    <div class="metrics">
+      <div class="m"><label>KALSHI</label><b id="c_k">—</b></div>
+      <div class="m"><label>POLY</label><b id="c_p">—</b></div>
+      <div class="m"><label>GEMINI</label><b id="c_g">—</b></div>
+      <div class="m"><label>DEPLOYABLE</label><b id="c_v">—</b></div>
+    </div>
+  </section>
+  <section class="pos">
+    <h2>POSITIONS</h2>
+    <div class="scroll"><table><thead><tr><th>MKT</th><th>YES</th><th>NO</th><th>AVG Y</th><th>AVG N</th></tr></thead><tbody id="pos"></tbody></table></div>
+  </section>
+  <section class="books">
+    <h2>UNIVERSE / CROSSED BOOKS</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>TICKER</th><th>K YES</th><th>K NO</th><th>P YES</th><th>P NO</th><th>G YES</th><th>G NO</th><th>PAIR</th><th>EDGE</th></tr></thead>
+      <tbody id="books"></tbody>
+    </table></div>
+  </section>
+  <section class="side">
+    <h2>SESSION</h2>
+    <div class="kv" id="sess"></div>
+  </section>
+  <section class="log">
+    <h2>EVENT LOG</h2>
+    <div class="scroll" id="log"></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+function money(v) {
+  if (v === undefined || v === null) return "—";
+  return Number(v).toFixed(2);
+}
+function px(a, n) {
+  if (!a) return "—";
+  let s = Number(a[0]).toFixed(2) + "/" + Number(a[1]).toFixed(2);
+  if (n && Number(n[1]) > 0) s += "×" + Number(n[1]);
+  return s;
+}
+function tick() {
+  const d = new Date();
+  $("clock").textContent = d.toISOString().replace("T", "  ").slice(0, 23) + " UTC";
+}
+async function pull() {
+  try {
+    const r = await fetch("/api/status");
+    const j = await r.json();
+    $("live").className = "pill" + (j.clock ? " work" : (j.live ? " on" : ""));
+    $("live").textContent = j.clock ? "CLOCK" : (j.live ? "LIVE" : "PAPER");
+    $("prod").className = "pill" + (j.prod ? " on" : "");
+    $("prod").textContent = j.prod ? "KALSHI PROD" : "KALSHI DEMO";
+    $("work").className = "pill" + (j.working ? " work" : "");
+    $("work").textContent = j.working ? "WORKING" : "IDLE";
+    $("trade").className = "pill" + (j.halted ? " work" : (j.trading ? " on" : ""));
+    $("trade").textContent = j.halted ? "HALTED" : (j.trading ? "TRADING" : "STANDBY");
+    $("start").disabled = !!j.trading;
+    $("start").textContent = j.trading ? "RUNNING" : "START";
+    $("stop").disabled = !j.trading || !!j.halted;
+    $("c_k").textContent = money(j.cash && j.cash.kalshi);
+    $("c_p").textContent = money(j.cash && j.cash.polymarket);
+    $("c_g").textContent = money(j.cash && j.cash.gemini);
+    $("c_v").textContent = money(j.cash && j.cash.venue_sum);
+    $("sess").innerHTML =
+      "<div><span>MARKETS</span> <b>" + ((j.books && j.books.length) || 0) + "</b></div>" +
+      "<div><span>FEEDS</span> <b>" + (j.trading ? "ON" : "OFF") + "</b></div>" +
+      "<div><span>EDGE RULE</span> <b>KALSHI + POLY + GEMINI CASH</b></div>" +
+      "<div><span>CHASE</span> <b>+0.01 UNTIL LOCKED FILL</b></div>";
+    const pb = $("books");
+    pb.innerHTML = "";
+    (j.books || []).forEach(b => {
+      const tr = document.createElement("tr");
+      if (b.expired) tr.className = "expired";
+      else if (b.edge > 0) tr.className = "arb";
+      tr.innerHTML =
+        "<td>" + (b.ticker || b.market_id) + "</td>" +
+        "<td>" + px(b.k_yes, b.k_n) + "</td>" +
+        "<td>" + px(b.k_no, b.k_n ? [b.k_n[1], b.k_n[0]] : null) + "</td>" +
+        "<td>" + px(b.p_yes, b.p_n) + "</td>" +
+        "<td>" + px(b.p_no, b.p_n ? [b.p_n[1], b.p_n[0]] : null) + "</td>" +
+        "<td>" + px(b.g_yes, b.g_n) + "</td>" +
+        "<td>" + px(b.g_no, b.g_n ? [b.g_n[1], b.g_n[0]] : null) + "</td>" +
+        "<td>" + money(b.pair) + "</td>" +
+        "<td>" + (b.edge > 0 ? ("+" + Number(b.edge).toFixed(3)) : Number(b.edge).toFixed(3)) + "</td>";
+      pb.appendChild(tr);
+    });
+    const pp = $("pos");
+    pp.innerHTML = "";
+    (j.positions || []).forEach(p => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = "<td>" + (p.ticker || p.market_id) + "</td><td>" + p.yes + "</td><td>" + p.no + "</td><td>" + money(p.avg_yes) + "</td><td>" + money(p.avg_no) + "</td>";
+      pp.appendChild(tr);
+    });
+    $("log").innerHTML = (j.log || []).map(l => "<div>" + l + "</div>").join("");
+  } catch (e) {}
+}
+$("start").addEventListener("click", async () => {
+  $("start").disabled = true;
+  try { await fetch("/api/start", { method: "POST" }); } catch (e) {}
+  pull();
+});
+$("stop").addEventListener("click", async () => {
+  $("stop").disabled = true;
+  try { await fetch("/api/stop", { method: "POST" }); } catch (e) {}
+  pull();
+});
+setInterval(tick, 250);
+setInterval(pull, 400);
+tick(); pull();
+</script>
+</body>
+</html>

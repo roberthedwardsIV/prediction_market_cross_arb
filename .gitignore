@@ -1,0 +1,7 @@
+.env
+.env.*
+*.pem
+*credentials*
+secrets/
+*.csv
+tapes/
