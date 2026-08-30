@@ -1,8 +1,9 @@
 .env
-.env.*
 *.pem
 *credentials*
 secrets/
 tapes/
 build/
 src/Test
+markets.csv
+ticks.csv
