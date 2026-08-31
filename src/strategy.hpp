@@ -83,39 +83,10 @@ class Strategy {
 
             float fees = takerFee(lowest_no_ask.venue, lowest_no_ask.no_ask, 1) + takerFee(lowest_yes_ask.venue, lowest_yes_ask.yes_ask, 1);
             float pair = fees + lowest_yes_ask.yes_ask + lowest_no_ask.no_ask;
-            if (lowest_no_ask.venue_id != 0 && lowest_yes_ask.venue_id != 0 && pair < 1.0f) {
-                auto venueNeed = [](int venue, float price, int n) {
-                    return n * price + takerFee(venue, price, n);
-                };
-                auto fits = [&](int n) {
-                    float need[4] = {0, 0, 0, 0};
-                    need[lowest_yes_ask.venue] += venueNeed(lowest_yes_ask.venue, lowest_yes_ask.yes_ask, n);
-                    need[lowest_no_ask.venue] += venueNeed(lowest_no_ask.venue, lowest_no_ask.no_ask, n);
-                    return need[Kalshi] <= kalshi_cash && need[Polymarket] <= polymarket_cash && need[Gemini] <= gemini_cash;
-                };
-                float edge = 1.0f - pair;
-                float allocate = edge * (kalshi_cash + polymarket_cash + gemini_cash);
-                int size = static_cast<int>(allocate / pair);
-                if (size < 1) size = 1;
-                if (size > 50) size = 50;
-                int book = lowest_yes_ask.yes_ask_n;
-                if (lowest_no_ask.no_ask_n < book) book = lowest_no_ask.no_ask_n;
-                if (book < 1) return;
-                if (size > book) size = book;
-                while (size > 1) {
-                    float spent = size * (lowest_yes_ask.yes_ask + lowest_no_ask.no_ask)
-                        + takerFee(lowest_no_ask.venue, lowest_no_ask.no_ask, size)
-                        + takerFee(lowest_yes_ask.venue, lowest_yes_ask.yes_ask, size);
-                    if (spent < static_cast<float>(size) && fits(size)) break;
-                    size--;
-                }
-                float spent = size * (lowest_yes_ask.yes_ask + lowest_no_ask.no_ask)
-                    + takerFee(lowest_no_ask.venue, lowest_no_ask.no_ask, size)
-                    + takerFee(lowest_yes_ask.venue, lowest_yes_ask.yes_ask, size);
-                if (spent >= static_cast<float>(size) || !fits(size)) {
-                    return;
-                }
 
+            if (lowest_no_ask.venue_id != 0 && lowest_yes_ask.venue_id != 0 && pair < 1.0f) {
+
+                int size = 1;
                 next_no_move.market_id = lowest_no_ask.market_id;
                 next_no_move.venue_id = lowest_no_ask.venue_id;
                 next_no_move.venue = lowest_no_ask.venue;

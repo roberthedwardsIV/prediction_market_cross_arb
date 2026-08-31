@@ -330,6 +330,7 @@ void on_tick(MarketData& md, long int venue_id) {
 
     Strategy strat;
     strat.strategize(m, now, test_manager.kalshiCash(), test_manager.polymarketCash(), test_manager.geminiCash());
+
     latencyIntent();
     latencyRecordTick();
     if (latencyShouldLogSummary()) {
@@ -338,13 +339,14 @@ void on_tick(MarketData& md, long int venue_id) {
 
     OrderIntent strat_yes_idea = strat.getYesOrderIntent();
     OrderIntent strat_no_idea = strat.getNoOrderIntent();
+
     if (strat_yes_idea.size > 0 && strat_no_idea.size > 0) {
-        if ((test_manager.getPositionByMarketId(strat_yes_idea.market_id).yes_count == 0 && test_manager.getPositionByMarketId(strat_no_idea.market_id).no_count == 0)
-        || (test_manager.getPositionByMarketId(strat_yes_idea.market_id).average_yes_price + test_manager.getPositionByMarketId(strat_yes_idea.market_id).average_no_price) > (strat_yes_idea.limit_price + strat_no_idea.limit_price)) {
-            if (assisiClockOnly()) {
-                monitorLog(latencySendLine() + std::string(" src=") + srcName(s.venue));
-                monitorLog("clock only, no send");
-            } else if (!monitorHalted()) {
+        
+        if (assisiClockOnly()) {
+            monitorLog(latencySendLine() + std::string(" src=") + srcName(s.venue));
+            monitorLog("clock only, no send");
+
+        } else if (!monitorHalted()) {
             if (assisiLiveOrders() && !assisiReplay()) {
                 if (!live_working) {
                     strat_yes_idea.size = 1;
@@ -354,6 +356,7 @@ void on_tick(MarketData& md, long int venue_id) {
                         liveSendPair(strat_yes_idea, strat_no_idea);
                     }).detach();
                 }
+
             } else {
                 monitorLog(latencySendLine());
                 Execute yes_execute, no_execute;
@@ -368,7 +371,7 @@ void on_tick(MarketData& md, long int venue_id) {
                 Portfolio test_book = test_manager.getPortfolio();
                 cout << "CASH BALANCE: $" << test_book.cash << " YESs: " << test_manager.getPositionByMarketId(yes_fill.market_id).yes_count << " NOs: " << test_manager.getPositionByMarketId(no_fill.market_id).no_count << " MARKET: " << no_fill.market_id << "\n";
             }
-            }
+            
         }
     }
 }
@@ -378,6 +381,7 @@ int main(int argc, char** argv) {
     bool start_now = false;
     std::string record_path;
     std::string replay_path;
+
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--trade") start_now = true;
@@ -396,6 +400,7 @@ int main(int argc, char** argv) {
     }
     cout << "ASSISI_LIVE=" << assisiLiveOrders() << " clock_only=" << assisiClockOnly()
          << " kalshi_prod=" << kalshiIsProd() << " gemini_sandbox=" << geminiIsSandbox() << "\n";
+
     MarketData test;
     books = &test;
 
