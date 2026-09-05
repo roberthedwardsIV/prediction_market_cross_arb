@@ -11,9 +11,9 @@ bool approve_pair(const OrderIntent& yes, const OrderIntent& no, PortfolioManage
     if((current_contract_count + yes.size + no.size) > limits.max_contracts_per_market) { return false; }
 
     // does this intent cause venue-specific cash reserve to be violated?
-    float kalshi_cash = book.kalshi_cash();
-    float polymarket_cash = book.polymarket_cash();
-    float gemini_cash = book.gemini_cash();
+    float kalshi_cash = book.kalshiCash();
+    float polymarket_cash = book.polymarketCash();
+    float gemini_cash = book.geminiCash();
 
     float kalshi_exposure = book.getPortfolio().kalshi_exposure;
     float polymarket_exposure = book.getPortfolio().polymarket_exposure;

@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libssl-dev
+
+      - name: Configure
+        run: cmake -S . -B build
+
+      - name: Build tests
+        run: cmake --build build --target assisi_tests -j
+
+      - name: Run tests
+        run: ./build/assisi_tests

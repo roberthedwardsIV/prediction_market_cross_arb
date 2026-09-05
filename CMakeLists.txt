@@ -46,3 +46,30 @@ target_link_libraries(kalshi_feed PRIVATE
   OpenSSL::Crypto
   nlohmann_json::nlohmann_json
 )
+
+enable_testing()
+
+FetchContent_Declare(
+  googletest
+  GIT_REPOSITORY https://github.com/google/googletest.git
+  GIT_TAG        v1.14.0
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+
+add_executable(assisi_tests
+  tests/smoke_test.cpp
+  tests/test_fees.cpp
+  tests/test_risk.cpp
+  tests/test_portfolio.cpp
+  tests/test_tape.cpp
+  tests/test_strategy.cpp
+)
+target_include_directories(assisi_tests PRIVATE src)
+
+target_link_libraries(assisi_tests PRIVATE
+  GTest::gtest_main
+)
+
+include(GoogleTest)
+gtest_discover_tests(assisi_tests)
