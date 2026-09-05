@@ -1,6 +1,7 @@
 #pragma once
 #include <cstring>
 #include <mutex>
+#include <unordered_map>
 
 const int Kalshi = 1;
 const int Polymarket = 2;
@@ -99,48 +100,67 @@ class Market {
             }
         }
 
-        long int getMarketId() { return market_id; }
-        long int getExpirationDate() { return expiration_date; }
-        Snapshot getKalshiSnapshot() { return kalshi_market_view; }
-        Snapshot getPolymarketSnapshot() { return polymarket_market_view; }
-        Snapshot getGeminiSnapshot() { return gemini_market_view; }
+        long int getMarketId() const { return market_id; }
+        long int getExpirationDate() const { return expiration_date; }
+        Snapshot getKalshiSnapshot() const { return kalshi_market_view; }
+        Snapshot getPolymarketSnapshot() const { return polymarket_market_view; }
+        Snapshot getGeminiSnapshot() const { return gemini_market_view; }
+        Snapshot getSnapshot(int venue) const {
+            if (venue == Kalshi) return kalshi_market_view;
+            if (venue == Polymarket) return polymarket_market_view;
+            if (venue == Gemini) return gemini_market_view;
+            return Snapshot();
+        }
+};
+
+struct SlotRef {
+    int slot;
+    int venue;
+    SlotRef() : slot(-1), venue(0) {}
+    SlotRef(int s, int v) : slot(s), venue(v) {}
 };
 
 class MarketData {
     Market markets_[16];
     int market_count_;
     std::mutex mtx_;
+    std::unordered_map<long int, SlotRef> slot_by_venue_id_;
+    std::unordered_map<long int, int> slot_by_market_id_;
 
 public:
     MarketData() { market_count_ = 0; }
 
-    void price_update(long int venue_id, int venue, float yes_bid, float yes_ask, float no_bid, float no_ask,
+    SlotRef slotForVenue(long int venue_id) const {
+        auto it = slot_by_venue_id_.find(venue_id);
+        if (it == slot_by_venue_id_.end()) return SlotRef();
+        return it->second;
+    }
+
+    int slotForMarket(long int market_id) const {
+        auto it = slot_by_market_id_.find(market_id);
+        if (it == slot_by_market_id_.end()) return -1;
+        return it->second;
+    }
+
+    int price_update(long int venue_id, int venue, float yes_bid, float yes_ask, float no_bid, float no_ask,
         int yes_bid_n, int yes_ask_n, int no_bid_n, int no_ask_n) {
+        SlotRef ref = slotForVenue(venue_id);
+        if (ref.slot < 0 || ref.venue != venue) return -1;
         std::lock_guard<std::mutex> lock(mtx_);
-        for (int i = 0; i < market_count_; i++) {
-            if (venue == Kalshi && markets_[i].getKalshiSnapshot().venue_id == venue_id) {
-                markets_[i].snapshot_update(venue_id, venue, yes_bid, yes_ask, no_bid, no_ask,
-                    yes_bid_n, yes_ask_n, no_bid_n, no_ask_n);
-                return;
-            }
-            if (venue == Polymarket && markets_[i].getPolymarketSnapshot().venue_id == venue_id) {
-                markets_[i].snapshot_update(venue_id, venue, yes_bid, yes_ask, no_bid, no_ask,
-                    yes_bid_n, yes_ask_n, no_bid_n, no_ask_n);
-                return;
-            }
-            if (venue == Gemini && markets_[i].getGeminiSnapshot().venue_id == venue_id) {
-                markets_[i].snapshot_update(venue_id, venue, yes_bid, yes_ask, no_bid, no_ask,
-                    yes_bid_n, yes_ask_n, no_bid_n, no_ask_n);
-                return;
-            }
-        }
+        markets_[ref.slot].snapshot_update(venue_id, venue, yes_bid, yes_ask, no_bid, no_ask,
+            yes_bid_n, yes_ask_n, no_bid_n, no_ask_n);
+        return ref.slot;
     }
 
     void Register(long int market_id, long int expiration_date, long int kal_id = 0, long int pm_id = 0, long int gem_id = 0) {
-        if (market_count_ < 16 && getMarketById(market_id).getMarketId() == 0) {
-            markets_[market_count_] = Market(market_id, expiration_date, kal_id, pm_id, gem_id);
-            market_count_++;
-        }
+        if (market_count_ >= 16 || slotForMarket(market_id) >= 0) return;
+        int slot = market_count_;
+        markets_[slot] = Market(market_id, expiration_date, kal_id, pm_id, gem_id);
+        market_count_++;
+        slot_by_market_id_[market_id] = slot;
+        if (kal_id) slot_by_venue_id_[kal_id] = SlotRef(slot, Kalshi);
+        if (pm_id) slot_by_venue_id_[pm_id] = SlotRef(slot, Polymarket);
+        if (gem_id) slot_by_venue_id_[gem_id] = SlotRef(slot, Gemini);
     }
 
     int marketCount() {
@@ -155,29 +175,14 @@ public:
     }
 
     Market getMarketById(long int market_id) {
-        std::lock_guard<std::mutex> lock(mtx_);
-        for (int i = 0; i < market_count_; i++) {
-            if (markets_[i].getMarketId() == market_id) {
-                return markets_[i];
-            }
-        }
-        return Market();
+        return getMarketAt(slotForMarket(market_id));
     }
 
     Snapshot getSnapshotByVenueId(long int venue_id, int venue) {
+        SlotRef ref = slotForVenue(venue_id);
+        if (ref.slot < 0 || ref.venue != venue) return Snapshot();
         std::lock_guard<std::mutex> lock(mtx_);
-        for (int i = 0; i < market_count_; i++) {
-            if (venue == Kalshi && markets_[i].getKalshiSnapshot().venue_id == venue_id) {
-                return markets_[i].getKalshiSnapshot();
-            }
-            if (venue == Polymarket && markets_[i].getPolymarketSnapshot().venue_id == venue_id) {
-                return markets_[i].getPolymarketSnapshot();
-            }
-            if (venue == Gemini && markets_[i].getGeminiSnapshot().venue_id == venue_id) {
-                return markets_[i].getGeminiSnapshot();
-            }
-        }
-        return Snapshot();
+        return markets_[ref.slot].getSnapshot(venue);
     }
 };
 

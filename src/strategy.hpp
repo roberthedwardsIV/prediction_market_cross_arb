@@ -86,7 +86,13 @@ class Strategy {
 
             if (lowest_no_ask.venue_id != 0 && lowest_yes_ask.venue_id != 0 && pair < 1.0f) {
 
-                int size = 1;
+                int book = std::min(lowest_yes_ask.yes_ask_n, lowest_no_ask.no_ask_n);
+                int size = (book * 70) / 100;
+                if (size < 1) {
+                    next_yes_move.size = 0;
+                    next_no_move.size = 0;
+                    return; 
+                }
                 next_no_move.market_id = lowest_no_ask.market_id;
                 next_no_move.venue_id = lowest_no_ask.venue_id;
                 next_no_move.venue = lowest_no_ask.venue;

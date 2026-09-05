@@ -47,8 +47,19 @@ inline bool kalshiIsProd() {
     return envValue("KALSHI_ENV") == "prod";
 }
 
-inline bool assisiLiveOrders() {
+inline bool assisiLiveAllowed() {
     return envValue("ASSISI_LIVE") == "1";
+}
+
+inline int& assisiLiveOverride() {
+    static int v = -1;
+    return v;
+}
+
+inline bool assisiLiveOrders() {
+    int o = assisiLiveOverride();
+    if (o >= 0) return o == 1;
+    return assisiLiveAllowed();
 }
 
 inline bool& assisiClockOnlyFlag() {

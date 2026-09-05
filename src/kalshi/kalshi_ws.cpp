@@ -1,7 +1,7 @@
 #include "kalshi_ws.hpp"
 #include "kalshi_env.hpp"
 #include "latency.hpp"
-#include "json_find.hpp"
+#include "parse_book.hpp"
 
 #include <iostream>
 #include <chrono>
@@ -150,40 +150,19 @@ bool startKalshiWebsocket(MarketData& md, std::unordered_map<std::string, long i
         std::cout << "error: " << msg->errorInfo.reason << "\n";
     } else if (msg->type == ix::WebSocketMessageType::Message) {
         latencyArrive();
-        std::string kind;
-        if (!jsonField(msg->str, "type", kind)) {
-            return;
-        }
-        if (kind == "ticker") {
-            std::string bid_s, ask_s, ticker;
-            if (!jsonField(msg->str, "yes_bid_dollars", bid_s) ||
-                !jsonField(msg->str, "yes_ask_dollars", ask_s) ||
-                !jsonField(msg->str, "market_ticker", ticker)) {
-                return;
-            }
-            float yes_bid = std::stof(bid_s);
-            float yes_ask = std::stof(ask_s);
-            float no_bid = 1.0f - yes_ask;
-            float no_ask = 1.0f - yes_bid;
-            std::string bid_n_s, ask_n_s;
-            int yes_bid_n = jsonSizeOrUnknown(jsonField(msg->str, "yes_bid_size_fp", bid_n_s), bid_n_s);
-            int yes_ask_n = jsonSizeOrUnknown(jsonField(msg->str, "yes_ask_size_fp", ask_n_s), ask_n_s);
-            auto it = kalshi_ids.find(ticker);
-            if (it == kalshi_ids.end()) {
-                return;
-            }
-            long int venue_id = it->second;
-            md.price_update(venue_id, Kalshi, yes_bid, yes_ask, no_bid, no_ask,
-                yes_bid_n, yes_ask_n, yes_ask_n, yes_bid_n);
-            latencyParsed();
-            if(on_tick) { on_tick(md, venue_id); }
-        } else if (kind == "error") {
-            std::cout << "kalshi: " << msg->str << "\n";
-        }
+        ParsedBook book = parseKalshiTickerJson(msg->str);
+        if (!book.ok) return;
+        auto it = kalshi_ids.find(book.id);
+        if (it == kalshi_ids.end()) return;
+        long int venue_id = it->second;
+        float no_bid = 1.0f - book.yes_ask;
+        float no_ask = 1.0f - book.yes_bid;
+        md.price_update(venue_id, Kalshi, book.yes_bid, book.yes_ask, no_bid, no_ask,
+            book.yes_bid_n, book.yes_ask_n, book.yes_ask_n, book.yes_bid_n);
+        latencyParsed();
+        if (on_tick) on_tick(md, venue_id);
     }
     });
-
-    
 
     webSocket.start();
     while (true) {

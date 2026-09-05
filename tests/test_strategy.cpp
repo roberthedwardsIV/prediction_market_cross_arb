@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 #include "strategy.hpp"
 
-TEST(Strategy, EmitsSizeOneOnEdge) {
+TEST(Strategy, EmitsSizeOnEdge) {
     // yes 0.40 + no 0.40 + fees < 1.0
     Market m(1, 9999999999L, /*kal*/10, /*pm*/20, /*gem*/0);
     m.snapshot_update(10, Kalshi, 0.39f, 0.40f, 0.59f, 0.60f, 5, 5, 5, 5);
@@ -9,8 +9,8 @@ TEST(Strategy, EmitsSizeOneOnEdge) {
 
     Strategy s;
     s.strategize(m, 0, 100.f, 100.f, 100.f);
-    EXPECT_EQ(s.getYesOrderIntent().size, 1);
-    EXPECT_EQ(s.getNoOrderIntent().size, 1);
+    EXPECT_EQ(s.getYesOrderIntent().size, 3);
+    EXPECT_EQ(s.getNoOrderIntent().size, 3);
     EXPECT_FLOAT_EQ(s.getYesOrderIntent().limit_price, 0.40f);
     EXPECT_FLOAT_EQ(s.getNoOrderIntent().limit_price, 0.40f);
 }

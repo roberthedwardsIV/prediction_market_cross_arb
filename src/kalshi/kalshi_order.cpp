@@ -61,11 +61,6 @@ KalshiOrderResult sendKalshiOrder(std::string ticker, OrderIntent idea) {
         std::cout << "kalshi FOK no fill\n";
         return result;
     }
-    result.ok = !assisiLiveOrders() || result.fill_count > 0.0f;
-    if (!assisiLiveOrders()) {
-        result.ok = true;
-        if (result.fill_count <= 0.0f) result.fill_count = static_cast<float>(idea.size);
-        if (result.fill_price <= 0.0f) result.fill_price = idea.limit_price;
-    }
+    result.ok = result.fill_count > 0.0f;
     return result;
 }

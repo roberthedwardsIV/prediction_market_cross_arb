@@ -17,6 +17,9 @@ void monitorRequestTrade();
 bool monitorTradeRequested();
 void monitorHalt();
 bool monitorHalted();
+void monitorRequestReplay(const std::string& tape);
+bool monitorReplayRequested(std::string& tape_out);
+void monitorReplayState(bool running, bool done, int ticks, const std::string& tape);
 void monitorRefresh(MarketData& md, PortfolioManager& pm,
     const std::unordered_map<long int, std::string>& kalshi,
     const std::unordered_map<long int, std::string>& polymarket,

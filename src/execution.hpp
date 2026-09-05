@@ -11,6 +11,24 @@ struct Fill {
     bool buy;
 };
 
+enum class FillApply {
+    Applied,
+    Ignored,
+    Unregistered
+};
+
+inline bool takeReportedFill(float reported_count, float reported_price, float limit_price,
+                             int& size_out, float& price_out) {
+    if (reported_count <= 0.0f) {
+        size_out = 0;
+        price_out = 0.0f;
+        return false;
+    }
+    size_out = static_cast<int>(reported_count);
+    price_out = reported_price > 0.0f ? reported_price : limit_price;
+    return true;
+}
+
 class Execute {
     Fill order_fill;
 

@@ -1,4 +1,10 @@
+#pragma once
+#include <algorithm>
+#include <atomic>
+#include <mutex>
 #include <string>
+#include "portfolio.hpp"
+#include "strategy.hpp"
 
 enum class RiskReason {
     Ok,
@@ -8,11 +14,14 @@ enum class RiskReason {
     NoCash,
     Allocation,
     NoEquity,
-    MarketPct
+    MarketPct,
+    InFlight,
+    BelowMinEdge,
+    Halted
 };
 
-std::string ReasonLogger(RiskReason reason) {
-    switch(reason) {
+inline std::string ReasonLogger(RiskReason reason) {
+    switch (reason) {
         case RiskReason::Ok:
             return "Ok";
         case RiskReason::ContractCap:
@@ -29,88 +38,244 @@ std::string ReasonLogger(RiskReason reason) {
             return "No equity";
         case RiskReason::MarketPct:
             return "Market percentage limit reached";
+        case RiskReason::InFlight:
+            return "In-flight order";
+        case RiskReason::BelowMinEdge:
+            return "Below min edge at size";
+        case RiskReason::Halted:
+            return "Kill switch halted";
     }
     return "Unknown";
 }
+
 struct RiskLimits {
-    float max_market_pct;               // % of portfolio per market
-    float max_allocation_pct;           // % of cash spent on contracts
-    float venue_reserve_pct;            // % of cash to save on each Venue
-    int   max_contracts_per_market;     // max count of contracts per market
+    float max_market_pct;
+    float max_allocation_pct;
+    float venue_reserve_pct;
+    int max_contracts_per_market;
+    float chase_reserve;
+    float max_drawdown;
 };
 
-RiskReason approve_pair(const OrderIntent& yes, const OrderIntent& no, PortfolioManager& book, const RiskLimits& limits) {
-    // does this intent exceed the max # of contracts per market?
-    int current_contract_count = book.getPositionByMarketId(yes.market_id).yes_count + book.getPositionByMarketId(no.market_id).no_count;
-    if((current_contract_count + yes.size + no.size) > limits.max_contracts_per_market) { return RiskReason::ContractCap; }
+struct RiskState {
+    std::atomic<bool> halted{false};
+    std::mutex mtx;
+    float realized_loss = 0.0f;
 
-    // does this intent cause venue-specific cash reserve to be violated?
-    float kalshi_cash = book.kalshiCash();
-    float polymarket_cash = book.polymarketCash();
-    float gemini_cash = book.geminiCash();
+    bool isHalted() const { return halted.load(); }
 
-    float kalshi_exposure = book.getPortfolio().kalshi_exposure;
-    float polymarket_exposure = book.getPortfolio().polymarket_exposure;
-    float gemini_exposure = book.getPortfolio().gemini_exposure;
-
-    float yes_cost = (yes.size * yes.limit_price) + takerFee(yes.venue, yes.limit_price, yes.size);
-    if(yes.venue == Kalshi) { 
-        if(yes_cost > kalshi_cash) { return RiskReason::VenueCash; }
-        else if(kalshi_exposure + yes_cost > (kalshi_cash + kalshi_exposure) * (1 - limits.venue_reserve_pct)) { return RiskReason::VenueReserve; }
+    void clearForTests() {
+        halted.store(false);
+        std::lock_guard<std::mutex> lock(mtx);
+        realized_loss = 0.0f;
     }
-    else if(yes.venue == Polymarket) {
-        if(yes_cost > polymarket_cash) { return RiskReason::VenueCash; }
-        else if(polymarket_exposure + yes_cost > (polymarket_cash + polymarket_exposure) * (1 - limits.venue_reserve_pct)) { return RiskReason::VenueReserve; }
+};
+
+inline bool riskNoteFill(RiskState& state, const RiskLimits& limits, const Fill& fill) {
+    if (state.isHalted()) return false;
+    float fee = takerFee(fill.venue, fill.price, fill.size);
+    bool newly_tripped = false;
+    {
+        std::lock_guard<std::mutex> lock(state.mtx);
+        state.realized_loss += fee;
+        if (state.realized_loss >= limits.max_drawdown) {
+            bool was = state.halted.exchange(true);
+            newly_tripped = !was;
+        }
     }
-    else if(yes.venue == Gemini) {
-        if(yes_cost > gemini_cash) { return RiskReason::VenueCash; }
-        else if(gemini_exposure + yes_cost > (gemini_cash + gemini_exposure) * (1 - limits.venue_reserve_pct)) { return RiskReason::VenueReserve; }
+    return newly_tripped;
+}
+
+inline float nextChasePrice(float current) {
+    return std::round((current + 0.01f) * 100.0f) / 100.0f;
+}
+
+inline float chaseCeiling(float other_price, int other_venue, int chase_venue, float chase_reserve) {
+    float room = 1.0f - chase_reserve - other_price - takerFee(other_venue, other_price, 1);
+    float best = 0.0f;
+    for (int c = 1; c <= 99; c++) {
+        float p = static_cast<float>(c) / 100.0f;
+        if (p + takerFee(chase_venue, p, 1) <= room + 1e-6f) best = p;
     }
+    return best;
+}
 
+inline bool canBumpChase(float current, float ceiling) {
+    return nextChasePrice(current) <= ceiling + 1e-6f;
+}
 
-    bool same_venue = (no.venue == yes.venue);
-    float no_cost = (no.size * no.limit_price) + takerFee(no.venue, no.limit_price, no.size);
-    if(no.venue == Kalshi) { 
-        if(no_cost > kalshi_cash) { return RiskReason::VenueCash; }
-        else if(kalshi_exposure + no_cost > (kalshi_cash + kalshi_exposure) * (1 - limits.venue_reserve_pct)) { return RiskReason::VenueReserve; }
-        else if (same_venue && yes_cost + no_cost > kalshi_cash) { return RiskReason::VenueCash; }
-        else if (same_venue && kalshi_exposure + yes_cost + no_cost > (kalshi_cash + kalshi_exposure) * (1 - limits.venue_reserve_pct)) { return RiskReason::VenueReserve; }
+inline float legCost(const OrderIntent& leg, int size) {
+    return (size * leg.limit_price) + takerFee(leg.venue, leg.limit_price, size);
+}
 
+inline bool pairProfitableAtSize(const OrderIntent& yes, const OrderIntent& no, int size) {
+    if (size < 1) return false;
+    return legCost(yes, size) + legCost(no, size) < static_cast<float>(size);
+}
+
+template <class CostFn>
+inline int fitSize(int size, float cap, CostFn cost) {
+    if (size < 1 || cap <= 0.0f) return 0;
+    int n = size;
+    float unit = cost(1);
+    if (unit > 0.0f) {
+        int est = static_cast<int>(cap / unit);
+        if (est < n) n = est;
     }
+    if (n < 0) n = 0;
+    while (n >= 1 && cost(n) > cap) n--;
+    while (n < size && cost(n + 1) <= cap) n++;
+    return n;
+}
 
-    else if(no.venue == Polymarket) {
-        if(no_cost > polymarket_cash) { return RiskReason::VenueCash; }
-        else if(polymarket_exposure + no_cost > (polymarket_cash + polymarket_exposure) * (1 - limits.venue_reserve_pct)) { return RiskReason::VenueReserve; }
-        else if (same_venue && yes_cost + no_cost > polymarket_cash) { return RiskReason::VenueCash; }
-        else if (same_venue && polymarket_exposure + yes_cost + no_cost > (polymarket_cash + polymarket_exposure) * (1 - limits.venue_reserve_pct)) { return RiskReason::VenueReserve; }
+inline RiskReason approve_pair(OrderIntent& yes, OrderIntent& no, const Portfolio& p, const RiskLimits& limits,
+                               RiskState* gate = nullptr) {
+    auto reject = [&](RiskReason r) {
+        yes.size = 0;
+        no.size = 0;
+        return r;
+    };
+    if (gate && gate->isHalted()) return reject(RiskReason::Halted);
+    auto yesCost = [&](int n) { return legCost(yes, n); };
+    auto noCost = [&](int n) { return legCost(no, n); };
+    auto pairCost = [&](int n) { return legCost(yes, n) + legCost(no, n); };
+    bool same_venue = yes.venue == no.venue;
+
+    Position ypos = p.positionFor(yes.market_id);
+    Position npos = (no.market_id == yes.market_id) ? ypos : p.positionFor(no.market_id);
+
+    int size = std::min(yes.size, no.size);
+    int room = limits.max_contracts_per_market - (ypos.yes_count + npos.no_count);
+    if (2 * size > room) size = room / 2;
+    if (size < 1) return reject(RiskReason::ContractCap);
+
+    if (same_venue) {
+        size = fitSize(size, p.venueCash(yes.venue), pairCost);
+    } else {
+        size = fitSize(size, p.venueCash(yes.venue), yesCost);
+        size = fitSize(size, p.venueCash(no.venue), noCost);
     }
-    else if(no.venue == Gemini) {
-        if(no_cost > gemini_cash) { return RiskReason::VenueCash; }
-        else if(gemini_exposure + no_cost > (gemini_cash + gemini_exposure) * (1 - limits.venue_reserve_pct)) { return RiskReason::VenueReserve; }
-        else if (same_venue && yes_cost + no_cost > gemini_cash) { return RiskReason::VenueCash; }
-        else if (same_venue && gemini_exposure + yes_cost + no_cost > (gemini_cash + gemini_exposure) * (1 - limits.venue_reserve_pct)) { return RiskReason::VenueReserve; }
+    if (size < 1) return reject(RiskReason::VenueCash);
 
+    float keep = 1.0f - limits.venue_reserve_pct;
+    auto reserveRoom = [&](int venue) {
+        float cash = p.venueCashGross(venue);
+        float exp = p.venueExposure(venue);
+        float reserved = p.venueReserved(venue);
+        return (cash + exp) * keep - exp - reserved;
+    };
+    if (same_venue) {
+        size = fitSize(size, reserveRoom(yes.venue), pairCost);
+    } else {
+        size = fitSize(size, reserveRoom(yes.venue), yesCost);
+        size = fitSize(size, reserveRoom(no.venue), noCost);
     }
- 
-    // does this intent cause total cash allocation limit to be violated?
-    float total_exposure = kalshi_exposure + polymarket_exposure + gemini_exposure;
-    float total_cash = kalshi_cash + polymarket_cash + gemini_cash;
-    float proposed_spend = yes_cost + no_cost;
-    if(total_cash == 0) { return RiskReason::NoCash; }
-    if(((total_exposure + proposed_spend) / total_cash) > limits.max_allocation_pct) { return RiskReason::Allocation; }
+    if (size < 1) return reject(RiskReason::VenueReserve);
 
+    float total_cash = p.totalCash();
+    float total_exposure = p.totalExposure();
+    if (total_cash == 0.0f) return reject(RiskReason::NoCash);
 
-    // will we own too much of this one market after the two buys?
-    float market_specific_exposure = (book.getPositionByMarketId(yes.market_id).average_yes_price * book.getPositionByMarketId(yes.market_id).yes_count) +
-                                        (book.getPositionByMarketId(no.market_id).average_no_price * book.getPositionByMarketId(no.market_id).no_count);
+    size = fitSize(size, (total_cash - p.totalReserved()) * limits.max_allocation_pct - total_exposure, pairCost);
+    if (size < 1) return reject(RiskReason::Allocation);
+
     float total_equity = total_cash + total_exposure;
-    if(total_equity == 0) { return RiskReason::NoEquity; }
-    if(((market_specific_exposure + proposed_spend) / total_equity) > limits.max_market_pct) { return RiskReason::MarketPct; }
-     
-    
+    if (total_equity == 0.0f) return reject(RiskReason::NoEquity);
 
+    float market_exposure =
+        (ypos.average_yes_price * ypos.yes_count) +
+        (npos.average_no_price * npos.no_count);
+    size = fitSize(size, total_equity * limits.max_market_pct - market_exposure, pairCost);
+    if (size < 1) return reject(RiskReason::MarketPct);
 
+    while (size >= 1 && !pairProfitableAtSize(yes, no, size)) {
+        size -= 1;
+    }
+    if (size < 1) return reject(RiskReason::BelowMinEdge);
 
+    yes.size = size;
+    no.size = size;
     return RiskReason::Ok;
+}
 
+inline RiskReason approve_pair(OrderIntent& yes, OrderIntent& no, PortfolioManager& book, const RiskLimits& limits,
+                               RiskState* gate = nullptr) {
+    return approve_pair(yes, no, book.getPortfolio(), limits, gate);
+}
+
+inline bool reserve_pair(PortfolioManager& book, const OrderIntent& yes, const OrderIntent& no) {
+    float yes_cost = legCost(yes, yes.size);
+    float no_cost = legCost(no, no.size);
+    return book.tryReserveTwo(yes.venue, yes_cost, no.venue, no_cost);
+}
+
+inline void release_pair(PortfolioManager& book, const OrderIntent& yes, const OrderIntent& no) {
+    float yes_cost = legCost(yes, yes.size);
+    float no_cost = legCost(no, no.size);
+    book.releaseReserveTwo(yes.venue, yes_cost, no.venue, no_cost);
+}
+
+inline bool reserve_leg(PortfolioManager& book, const OrderIntent& leg) {
+    return book.tryReserve(leg.venue, legCost(leg, leg.size));
+}
+
+inline void release_leg(PortfolioManager& book, const OrderIntent& leg) {
+    book.releaseReserve(leg.venue, legCost(leg, leg.size));
+}
+
+#include <cstdio>
+#include <unordered_map>
+#include "kalshi_env.hpp"
+
+inline RiskLimits defaultRiskLimits() {
+    return RiskLimits{0.70f, 0.80f, 0.10f, 100, 0.01f, 10.0f};
+}
+
+inline float riskEnvFloat(const std::string& raw, float fallback) {
+    if (raw.empty()) return fallback;
+    try {
+        return std::stof(raw);
+    } catch (...) {
+        return fallback;
+    }
+}
+
+inline int riskEnvInt(const std::string& raw, int fallback) {
+    if (raw.empty()) return fallback;
+    try {
+        return std::stoi(raw);
+    } catch (...) {
+        return fallback;
+    }
+}
+
+inline std::string riskEnvLookup(const std::unordered_map<std::string, std::string>* overrides,
+                                 const char* key) {
+    if (overrides) {
+        auto it = overrides->find(key);
+        if (it != overrides->end()) return it->second;
+    }
+    return envValue(key);
+}
+
+inline RiskLimits loadRiskLimits(const std::unordered_map<std::string, std::string>* overrides = nullptr) {
+    RiskLimits d = defaultRiskLimits();
+    RiskLimits lim;
+    lim.max_market_pct = riskEnvFloat(riskEnvLookup(overrides, "ASSISI_RISK_MAX_MARKET_PCT"), d.max_market_pct);
+    lim.max_allocation_pct = riskEnvFloat(riskEnvLookup(overrides, "ASSISI_RISK_MAX_ALLOCATION_PCT"), d.max_allocation_pct);
+    lim.venue_reserve_pct = riskEnvFloat(riskEnvLookup(overrides, "ASSISI_RISK_VENUE_RESERVE_PCT"), d.venue_reserve_pct);
+    lim.max_contracts_per_market = riskEnvInt(riskEnvLookup(overrides, "ASSISI_RISK_MAX_CONTRACTS"), d.max_contracts_per_market);
+    lim.chase_reserve = riskEnvFloat(riskEnvLookup(overrides, "ASSISI_RISK_CHASE_RESERVE"), d.chase_reserve);
+    lim.max_drawdown = riskEnvFloat(riskEnvLookup(overrides, "ASSISI_RISK_MAX_DRAWDOWN"), d.max_drawdown);
+    return lim;
+}
+
+inline std::string riskLimitsLogLine(const RiskLimits& lim) {
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+        "risk limits max_market_pct=%.2f max_allocation_pct=%.2f venue_reserve_pct=%.2f "
+        "max_contracts=%d chase_reserve=%.2f max_drawdown=%.2f",
+        lim.max_market_pct, lim.max_allocation_pct, lim.venue_reserve_pct,
+        lim.max_contracts_per_market, lim.chase_reserve, lim.max_drawdown);
+    return std::string(buf);
 }

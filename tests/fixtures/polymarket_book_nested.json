@@ -1,0 +1,15 @@
+{
+  "marketSlug": "paccc-usse-midterms-2026-11-03-rep",
+  "bids": [
+    {
+      "px": { "value": "0.42", "currency": "USD" },
+      "qty": "12.50"
+    }
+  ],
+  "offers": [
+    {
+      "px": { "value": "0.44", "currency": "USD" },
+      "qty": "7"
+    }
+  ]
+}

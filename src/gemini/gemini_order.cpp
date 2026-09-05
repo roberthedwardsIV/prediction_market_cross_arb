@@ -42,10 +42,6 @@ GeminiOrderResult sendGeminiOrder(std::string symbol, OrderIntent idea) {
             auto v = r.contains("avgPrice") ? r["avgPrice"] : r["averagePrice"];
             result.fill_price = v.is_string() ? std::stof(v.get<std::string>()) : v.get<float>();
         }
-        std::string st = r.value("status", r.value("X", ""));
-        if (result.fill_count <= 0 && (st == "FILLED" || st == "filled")) {
-            result.fill_count = static_cast<float>(idea.size);
-        }
     } catch (...) {
         return result;
     }
@@ -53,11 +49,6 @@ GeminiOrderResult sendGeminiOrder(std::string symbol, OrderIntent idea) {
         std::cout << "gemini FOK no fill\n";
         return result;
     }
-    result.ok = !assisiLiveOrders() || result.fill_count > 0.0f;
-    if (!assisiLiveOrders()) {
-        result.ok = true;
-        if (result.fill_count <= 0.0f) result.fill_count = static_cast<float>(idea.size);
-        if (result.fill_price <= 0.0f) result.fill_price = idea.limit_price;
-    }
+    result.ok = result.fill_count > 0.0f;
     return result;
 }

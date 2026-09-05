@@ -1,7 +1,7 @@
 #include "polymarket_ws.hpp"
 #include "kalshi_env.hpp"
 #include "latency.hpp"
-#include "json_find.hpp"
+#include "parse_book.hpp"
 
 #include <iostream>
 #include <chrono>
@@ -93,44 +93,14 @@ bool startPolymarketWebsocket(MarketData& md, std::unordered_map<std::string, lo
             std::cout << "polymarket error: " << msg->errorInfo.reason << "\n";
         } else if (msg->type == ix::WebSocketMessageType::Message) {
             latencyArrive();
-            std::string slug, bid_s, ask_s, bid_n_s, ask_n_s;
-            if (!jsonField(msg->str, "marketSlug", slug)) return;
-            auto it = ids.find(slug);
+            ParsedBook book = parsePolymarketBookJson(msg->str);
+            if (!book.ok) return;
+            auto it = ids.find(book.id);
             if (it == ids.end()) return;
-            std::string bid_obj, ask_obj;
-            bool have_bid_n = false, have_ask_n = false;
-            auto levelPx = [](const std::string& obj, std::string& out) {
-                return jsonField(obj, "px", out) || jsonField(obj, "price", out)
-                    || jsonNestedValue(obj, "px", out) || jsonNestedValue(obj, "price", out);
-            };
-            auto levelQty = [](const std::string& obj, std::string& out) {
-                return jsonField(obj, "qty", out) || jsonField(obj, "size", out)
-                    || jsonNestedValue(obj, "qty", out) || jsonNestedValue(obj, "size", out);
-            };
-            bool got_book =
-                (jsonFirstObjectSlice(msg->str, "bids", bid_obj)
-                    && (jsonFirstObjectSlice(msg->str, "offers", ask_obj)
-                        || jsonFirstObjectSlice(msg->str, "asks", ask_obj)));
-            if (got_book) {
-                if (!levelPx(bid_obj, bid_s) || !levelPx(ask_obj, ask_s)) return;
-                have_bid_n = levelQty(bid_obj, bid_n_s);
-                have_ask_n = levelQty(ask_obj, ask_n_s);
-            } else {
-                // Top-of-book-only messages often have no size — do not invent 1.
-                if (!(jsonNestedValue(msg->str, "bestBid", bid_s) || jsonField(msg->str, "bestBid", bid_s))
-                    || !(jsonNestedValue(msg->str, "bestAsk", ask_s) || jsonField(msg->str, "bestAsk", ask_s))) {
-                    return;
-                }
-            }
-            float yes_bid = std::stof(bid_s);
-            float yes_ask = std::stof(ask_s);
-            float no_bid = 1.0f - yes_ask;
-            float no_ask = 1.0f - yes_bid;
-            // Missing size → 0 (skip side). Do not use jsonSizeOrUnknown's fake 1.
-            int yes_bid_n = have_bid_n ? jsonContracts(bid_n_s) : 0;
-            int yes_ask_n = have_ask_n ? jsonContracts(ask_n_s) : 0;
-            md.price_update(it->second, Polymarket, yes_bid, yes_ask, no_bid, no_ask,
-                yes_bid_n, yes_ask_n, yes_ask_n, yes_bid_n);
+            float no_bid = 1.0f - book.yes_ask;
+            float no_ask = 1.0f - book.yes_bid;
+            md.price_update(it->second, Polymarket, book.yes_bid, book.yes_ask, no_bid, no_ask,
+                book.yes_bid_n, book.yes_ask_n, book.yes_ask_n, book.yes_bid_n);
             latencyParsed();
             if (on_tick) on_tick(md, it->second);
         }

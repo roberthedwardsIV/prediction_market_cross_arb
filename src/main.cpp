@@ -1,3 +1,4 @@
+#include <atomic>
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -10,6 +11,7 @@
 #include <vector>
 #include <chrono>
 #include <cstdlib>
+#include <cstdio>
 
 #include "kalshi_ws.hpp"
 #include "kalshi_order.hpp"
@@ -32,13 +34,14 @@
 
 using namespace std;
 
-PortfolioManager test_manager;
-RiskLimits limits{0.70, 0.80, 0.10, 100};
+PortfolioManager portfolio;
+RiskLimits limits = loadRiskLimits();
+RiskState risk_gate;
 unordered_map<long int, std::string> kalshi_ids_flipped;
 unordered_map<long int, std::string> pm_ids_flipped;
 unordered_map<long int, std::string> gem_ids_flipped;
 unordered_set<long int> expired_logged;
-bool live_working = false;
+std::atomic<bool> live_working{false};
 MarketData* books = nullptr;
 
 static const char* srcName(int venue) {
@@ -48,13 +51,28 @@ static const char* srcName(int venue) {
     return "?";
 }
 
-bool pairLocked(const OrderIntent& yes, const OrderIntent& no) {
-    float fees = takerFee(yes.venue, yes.limit_price, yes.size) + takerFee(no.venue, no.limit_price, no.size);
-    return (yes.size * (yes.limit_price + no.limit_price) + fees) < static_cast<float>(yes.size);
+static std::string moneyStr(float v) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.2f", v);
+    return buf;
+}
+
+static bool applyFill(const Fill& f) {
+    FillApply applied = portfolio.updatePortfolio(f);
+    if (applied == FillApply::Unregistered) {
+        monitorLog("unregistered fill market=" + std::to_string(f.market_id)
+            + " venue=" + srcName(f.venue) + " size=" + std::to_string(f.size));
+        return false;
+    }
+    if (applied == FillApply::Applied && riskNoteFill(risk_gate, limits, f)) {
+        monitorHalt();
+        monitorLog("kill switch: max drawdown reached");
+    }
+    return applied == FillApply::Applied;
 }
 
 void bumpLimit(OrderIntent& idea) {
-    idea.limit_price = std::round((idea.limit_price + 0.01f) * 100.0f) / 100.0f;
+    idea.limit_price = nextChasePrice(idea.limit_price);
 }
 
 void refreshVenueCash();
@@ -88,19 +106,24 @@ static bool sendVenueOrder(OrderIntent& leg, const char* http_clock) {
         fill_count = r.fill_count;
         fill_price = r.fill_price;
     }
-    monitorLog(latField(http_clock, latUs(k0, std::chrono::steady_clock::now())));
+    monitorLog(latField(http_clock, latNs(k0, std::chrono::steady_clock::now())));
     if (!ok) return false;
-    if (fill_price > 0) leg.limit_price = fill_price;
+    int size = 0;
+    float price = 0;
+    if (!takeReportedFill(fill_count, fill_price, leg.limit_price, size, price)) {
+        monitorLog(std::string(srcName(leg.venue)) + " fill count missing, treating as no fill");
+        return false;
+    }
+    leg.limit_price = price;
     Fill f;
     f.market_id = leg.market_id;
     f.venue_id = leg.venue_id;
     f.venue = leg.venue;
     f.side = leg.side;
-    f.size = static_cast<int>(fill_count > 0 ? fill_count : leg.size);
-    f.price = fill_price > 0 ? fill_price : leg.limit_price;
+    f.size = size;
+    f.price = price;
     f.buy = true;
-    test_manager.updatePortfolio(f);
-    return true;
+    return applyFill(f);
 }
 
 bool missingLegIntent(Market m, Position pos, OrderIntent& out) {
@@ -143,34 +166,48 @@ bool missingLegIntent(Market m, Position pos, OrderIntent& out) {
 }
 
 void liveSendLeg(OrderIntent leg) {
+    OrderIntent reserved = leg;
     auto t0 = std::chrono::steady_clock::now();
-    live_working = true;
     monitorSetWorking(true);
     monitorLog("missing leg start");
+    Position pos = portfolio.getPositionByMarketId(leg.market_id);
+    float other_price = (leg.side == NoSided) ? pos.average_yes_price : pos.average_no_price;
+    int other_venue = leg.venue;
+    float ceiling = chaseCeiling(other_price, other_venue, leg.venue, limits.chase_reserve);
     bool filled = false;
-    const char* clock = leg.venue == Kalshi ? "kalshi_http_us" : (leg.venue == Polymarket ? "pm_http_us" : "gem_http_us");
+    const char* clock = leg.venue == Kalshi ? "kalshi_http_ns" : (leg.venue == Polymarket ? "pm_http_ns" : "gem_http_ns");
     for (int i = 0; i < 15; i++) {
-        if (leg.limit_price >= 0.99f) break;
+        if (leg.limit_price > ceiling + 1e-6f) {
+            monitorLog("chase budget exhausted");
+            break;
+        }
         if (sendVenueOrder(leg, clock)) {
             monitorLog(std::string("missing ") + srcName(leg.venue) + " filled");
             filled = true;
             break;
         }
+        if (!canBumpChase(leg.limit_price, ceiling)) {
+            monitorLog("chase budget exhausted");
+            break;
+        }
         monitorLog(std::string("missing ") + srcName(leg.venue) + " miss, chase +0.01");
         bumpLimit(leg);
     }
-    if (!filled) monitorLog("missing leg unfilled");
-    monitorLog(latField("missing_total_us", latUs(t0, std::chrono::steady_clock::now())));
+    if (!filled) {
+        monitorLog("missing leg unfilled; position directional, unwind not implemented");
+    }
+    monitorLog(latField("missing_total_ns", latNs(t0, std::chrono::steady_clock::now())));
+    release_leg(portfolio, reserved);
     refreshVenueCash();
-    live_working = false;
+    live_working.store(false);
     monitorSetWorking(false);
 }
 
 void refreshVenueCash() {
     float k = 0, p = 0, g = 0;
-    if (refreshKalshiBalance(k)) test_manager.setKalshiCash(k);
-    if (refreshPolymarketBalance(p)) test_manager.setPolymarketCash(p);
-    if (refreshGeminiBalance(g)) test_manager.setGeminiCash(g);
+    if (refreshKalshiBalance(k)) portfolio.setKalshiCash(k);
+    if (refreshPolymarketBalance(p)) portfolio.setPolymarketCash(p);
+    if (refreshGeminiBalance(g)) portfolio.setGeminiCash(g);
 }
 
 void applyKalshiLots(const unordered_map<std::string, long int>& kalshi_ids, MarketData& md) {
@@ -185,7 +222,7 @@ void applyKalshiLots(const unordered_map<std::string, long int>& kalshi_ids, Mar
         if (it == kalshi_ids.end()) continue;
         Snapshot s = md.getSnapshotByVenueId(it->second, Kalshi);
         if (s.market_id == 0) continue;
-        test_manager.addVenueLot(s.market_id, s.venue, lot.yes_count, lot.no_count, lot.avg_yes, lot.avg_no);
+        portfolio.addVenueLot(s.market_id, s.venue, lot.yes_count, lot.no_count, lot.avg_yes, lot.avg_no);
         n++;
         if (lot.yes_count > 0) monitorLog(std::string("reconcile kalshi YES ") + lot.ticker);
         if (lot.no_count > 0) monitorLog(std::string("reconcile kalshi NO ") + lot.ticker);
@@ -205,7 +242,7 @@ void applyPolymarketLots(const unordered_map<std::string, long int>& ids, Market
         if (it == ids.end()) continue;
         Snapshot s = md.getSnapshotByVenueId(it->second, Polymarket);
         if (s.market_id == 0) continue;
-        test_manager.addVenueLot(s.market_id, s.venue, lot.yes_count, lot.no_count, lot.avg_yes, lot.avg_no);
+        portfolio.addVenueLot(s.market_id, s.venue, lot.yes_count, lot.no_count, lot.avg_yes, lot.avg_no);
         n++;
         if (lot.yes_count > 0) monitorLog(std::string("reconcile polymarket YES ") + lot.slug);
         if (lot.no_count > 0) monitorLog(std::string("reconcile polymarket NO ") + lot.slug);
@@ -225,7 +262,7 @@ void applyGeminiLots(const unordered_map<std::string, long int>& ids, MarketData
         if (it == ids.end()) continue;
         Snapshot s = md.getSnapshotByVenueId(it->second, Gemini);
         if (s.market_id == 0) continue;
-        test_manager.addVenueLot(s.market_id, s.venue, lot.yes_count, lot.no_count, lot.avg_yes, lot.avg_no);
+        portfolio.addVenueLot(s.market_id, s.venue, lot.yes_count, lot.no_count, lot.avg_yes, lot.avg_no);
         n++;
         if (lot.yes_count > 0) monitorLog(std::string("reconcile gemini YES ") + lot.symbol);
         if (lot.no_count > 0) monitorLog(std::string("reconcile gemini NO ") + lot.symbol);
@@ -234,16 +271,19 @@ void applyGeminiLots(const unordered_map<std::string, long int>& ids, MarketData
 }
 
 void liveSendPair(OrderIntent yes, OrderIntent no) {
+    OrderIntent reserved_yes = yes;
+    OrderIntent reserved_no = no;
     auto pair0 = std::chrono::steady_clock::now();
-    live_working = true;
     monitorSetWorking(true);
     monitorLog("live pair start");
 
     auto sendSide = [&](OrderIntent& leg, OrderIntent& other, bool first) -> bool {
-        const char* clock = leg.venue == Kalshi ? "kalshi_http_us" : (leg.venue == Polymarket ? "pm_http_us" : "gem_http_us");
+        const char* clock = leg.venue == Kalshi ? "kalshi_http_ns" : (leg.venue == Polymarket ? "pm_http_ns" : "gem_http_ns");
+        float ceiling = chaseCeiling(other.limit_price, other.venue, leg.venue, limits.chase_reserve);
         for (int i = 0; i < 15; i++) {
-            if (!pairLocked(yes, no)) {
-                monitorLog("chase stopped: pair no longer locked");
+            if (leg.limit_price > ceiling + 1e-6f) {
+                monitorLog("chase budget exhausted");
+                if (!first) monitorLog("second leg unfilled; position directional, unwind not implemented");
                 return false;
             }
             if (sendVenueOrder(leg, clock)) {
@@ -251,12 +291,17 @@ void liveSendPair(OrderIntent yes, OrderIntent no) {
                 if (leg.side == YesSided) yes = leg; else no = leg;
                 return true;
             }
+            if (!canBumpChase(leg.limit_price, ceiling)) {
+                monitorLog("chase budget exhausted");
+                if (!first) monitorLog("second leg unfilled; position directional, unwind not implemented");
+                return false;
+            }
             monitorLog(std::string(srcName(leg.venue)) + " miss, chase +0.01");
             bumpLimit(leg);
             if (leg.side == YesSided) yes = leg; else no = leg;
-            (void)other;
-            (void)first;
+            ceiling = chaseCeiling(other.limit_price, other.venue, leg.venue, limits.chase_reserve);
         }
+        if (!first) monitorLog("second leg unfilled; position directional, unwind not implemented");
         return false;
     };
 
@@ -268,30 +313,27 @@ void liveSendPair(OrderIntent yes, OrderIntent no) {
     }
     if (!sendSide(*first, *second, true)) {
         monitorLog("skip second: first leg not filled");
-        monitorLog(latField("pair_total_us", latUs(pair0, std::chrono::steady_clock::now())));
-        live_working = false;
-        monitorSetWorking(false);
+        monitorLog(latField("pair_total_ns", latNs(pair0, std::chrono::steady_clock::now())));
+        release_pair(portfolio, reserved_yes, reserved_no);
         refreshVenueCash();
+        live_working.store(false);
+        monitorSetWorking(false);
         return;
     }
     sendSide(*second, *first, false);
+    release_pair(portfolio, reserved_yes, reserved_no);
     refreshVenueCash();
-    live_working = false;
+    live_working.store(false);
     monitorSetWorking(false);
-    monitorLog(latField("pair_total_us", latUs(pair0, std::chrono::steady_clock::now())));
+    monitorLog(latField("pair_total_ns", latNs(pair0, std::chrono::steady_clock::now())));
     monitorLog("live pair done");
 }
 
-static Snapshot snapshotForTick(MarketData& md, long int venue_id) {
-    Snapshot s = md.getSnapshotByVenueId(venue_id, Kalshi);
-    if (s.market_id == 0) s = md.getSnapshotByVenueId(venue_id, Polymarket);
-    if (s.market_id == 0) s = md.getSnapshotByVenueId(venue_id, Gemini);
-    return s;
-}
-
 void on_tick(MarketData& md, long int venue_id) {
-    Snapshot s = snapshotForTick(md, venue_id);
-    Market m = md.getMarketById(s.market_id);
+    SlotRef ref = md.slotForVenue(venue_id);
+    if (ref.slot < 0) return;
+    Market m = md.getMarketAt(ref.slot);
+    Snapshot s = m.getSnapshot(ref.venue);
 
     if (tapeOut().is_open()) tapeWrite(s);
 
@@ -303,7 +345,8 @@ void on_tick(MarketData& md, long int venue_id) {
         return;
     }
 
-    Position pos = test_manager.getPositionByMarketId(m.getMarketId());
+    Portfolio book = portfolio.getPortfolio();
+    Position pos = book.positionFor(m.getMarketId());
     if (pos.yes_count != pos.no_count) {
         OrderIntent miss;
         if (missingLegIntent(m, pos, miss)) {
@@ -312,15 +355,23 @@ void on_tick(MarketData& md, long int venue_id) {
             if (assisiClockOnly()) {
                 monitorLog(latencySendLine() + " missing-leg");
                 monitorLog("clock only, no send");
-            } else if (!monitorHalted() && !live_working) {
+            } else if (!monitorHalted()) {
                 if (assisiLiveOrders() && !assisiReplay()) {
-                    monitorLog(latencySendLine() + " missing-leg");
-                    std::thread([miss]() { liveSendLeg(miss); }).detach();
+                    bool expected = false;
+                    if (!live_working.compare_exchange_strong(expected, true)) {
+                        monitorLog("risk rejected: " + ReasonLogger(RiskReason::InFlight));
+                    } else if (!reserve_leg(portfolio, miss)) {
+                        live_working.store(false);
+                        monitorLog("risk rejected: " + ReasonLogger(RiskReason::VenueCash));
+                    } else {
+                        monitorLog(latencySendLine() + " missing-leg");
+                        std::thread([miss]() { liveSendLeg(miss); }).detach();
+                    }
                 } else {
                     Execute ex;
                     ex.Executioner(miss);
                     Fill f = ex.getFill();
-                    if (f.size > 0) test_manager.updatePortfolio(f);
+                    if (f.size > 0) applyFill(f);
                     monitorLog("missing leg paper fill");
                 }
             }
@@ -335,7 +386,7 @@ void on_tick(MarketData& md, long int venue_id) {
     }
 
     Strategy strat;
-    strat.strategize(m, now, test_manager.kalshiCash(), test_manager.polymarketCash(), test_manager.geminiCash());
+    strat.strategize(m, now, book.kalshi_cash, book.polymarket_cash, book.gemini_cash);
 
     latencyIntent();
     latencyRecordTick();
@@ -347,9 +398,9 @@ void on_tick(MarketData& md, long int venue_id) {
     OrderIntent strat_no_idea = strat.getNoOrderIntent();
 
     if (strat_yes_idea.size > 0 && strat_no_idea.size > 0) {
-        RiskReason reason = approve_pair(strat_yes_idea, strat_no_idea, test_manager, limits);
+        RiskReason reason = approve_pair(strat_yes_idea, strat_no_idea, book, limits, &risk_gate);
         if(!(reason == RiskReason::Ok)) {
-            cout << "Risk rejected: " << ReasonLogger(reason) << "\n";
+            monitorLog("risk rejected: " + ReasonLogger(reason));
             return;
         }
         if (assisiClockOnly()) {
@@ -358,13 +409,18 @@ void on_tick(MarketData& md, long int venue_id) {
 
         } else if (!monitorHalted()) {
             if (assisiLiveOrders() && !assisiReplay()) {
-                if (!live_working) {
+                bool expected = false;
+                if (!live_working.compare_exchange_strong(expected, true)) {
+                    monitorLog("risk rejected: " + ReasonLogger(RiskReason::InFlight));
+                } else if (!reserve_pair(portfolio, strat_yes_idea, strat_no_idea)) {
+                    live_working.store(false);
+                    monitorLog("risk rejected: " + ReasonLogger(RiskReason::VenueCash));
+                } else {
                     monitorLog(latencySendLine() + std::string(" src=") + srcName(s.venue));
                     std::thread([strat_yes_idea, strat_no_idea]() {
                         liveSendPair(strat_yes_idea, strat_no_idea);
                     }).detach();
                 }
-
             } else {
                 monitorLog(latencySendLine());
                 Execute yes_execute, no_execute;
@@ -372,20 +428,57 @@ void on_tick(MarketData& md, long int venue_id) {
                 no_execute.Executioner(strat_no_idea);
                 Fill yes_fill = yes_execute.getFill();
                 Fill no_fill = no_execute.getFill();
-                cout << "YES FILLED: " << yes_fill.size << " x $" << yes_fill.price << " VENUE: " << yes_fill.venue << "\n";
-                cout << "NO FILLED: " << no_fill.size << " x $" << no_fill.price << " VENUE: " << no_fill.venue << "\n";
-                if (yes_fill.size > 0) test_manager.updatePortfolio(yes_fill);
-                if (no_fill.size > 0) test_manager.updatePortfolio(no_fill);
-                Portfolio test_book = test_manager.getPortfolio();
-                cout << "CASH BALANCE: $" << test_book.cash << " YESs: " << test_manager.getPositionByMarketId(yes_fill.market_id).yes_count << " NOs: " << test_manager.getPositionByMarketId(no_fill.market_id).no_count << " MARKET: " << no_fill.market_id << "\n";
+                if (yes_fill.size > 0) applyFill(yes_fill);
+                if (no_fill.size > 0) applyFill(no_fill);
+                Position after = portfolio.getPositionByMarketId(no_fill.market_id);
+                monitorLog("paper fill market=" + std::to_string(no_fill.market_id)
+                    + " yes " + std::to_string(yes_fill.size) + "@" + moneyStr(yes_fill.price) + " " + srcName(yes_fill.venue)
+                    + " no " + std::to_string(no_fill.size) + "@" + moneyStr(no_fill.price) + " " + srcName(no_fill.venue)
+                    + " held yes=" + std::to_string(after.yes_count) + " no=" + std::to_string(after.no_count)
+                    + " cash=" + moneyStr(portfolio.totalCash()));
             }
-            
         }
     }
 }
 
+static int runReplay(const std::string& path, MarketData& markets, bool refresh_ui) {
+    ifstream tape(path);
+    if (!tape) return -1;
+    assisiReplayFlag() = true;
+    portfolio.setKalshiCash(100);
+    portfolio.setPolymarketCash(100);
+    portfolio.setGeminiCash(100);
+    string tline;
+    getline(tape, tline);
+    int ticks = 0;
+    while (getline(tape, tline)) {
+        TapeTick tk;
+        if (!tapeParseLine(tline, tk)) continue;
+        Market m = markets.getMarketById(tk.market_id);
+        if (m.getMarketId() == 0) continue;
+        Snapshot snap;
+        if (tk.venue == Kalshi) snap = m.getKalshiSnapshot();
+        else if (tk.venue == Polymarket) snap = m.getPolymarketSnapshot();
+        else if (tk.venue == Gemini) snap = m.getGeminiSnapshot();
+        if (snap.venue_id == 0) continue;
+        assisiNowOverride() = tk.ts_ms / 1000;
+        markets.price_update(snap.venue_id, tk.venue, tk.yes_bid, tk.yes_ask, tk.no_bid, tk.no_ask,
+            tk.yes_bid_n, tk.yes_ask_n, tk.no_bid_n, tk.no_ask_n);
+        latencyArrive();
+        latencyParsed();
+        on_tick(markets, snap.venue_id);
+        ticks++;
+        if (refresh_ui && ticks % 250 == 0) {
+            monitorReplayState(true, false, ticks, path);
+            monitorRefresh(markets, portfolio, kalshi_ids_flipped, pm_ids_flipped, gem_ids_flipped);
+        }
+    }
+    assisiNowOverride() = 0;
+    writeLatencyToCsv("latency.csv");
+    return ticks;
+}
+
 int main(int argc, char** argv) {
-    cout << std::unitbuf;
     bool start_now = false;
     std::string record_path;
     std::string replay_path;
@@ -408,9 +501,11 @@ int main(int argc, char** argv) {
     }
     cout << "ASSISI_LIVE=" << assisiLiveOrders() << " clock_only=" << assisiClockOnly()
          << " kalshi_prod=" << kalshiIsProd() << " gemini_sandbox=" << geminiIsSandbox() << "\n";
+    limits = loadRiskLimits();
+    cout << riskLimitsLogLine(limits) << "\n";
 
-    MarketData test;
-    books = &test;
+    MarketData markets;
+    books = &markets;
 
     ifstream data;
     string line, tmp, kal_id, pm_id, gem_id;
@@ -448,41 +543,19 @@ int main(int argc, char** argv) {
         }
         cout << "Market_id: " << market_id << " Expiration: " << expiration
              << " Kalshi: " << kal_id << " Polymarket: " << pm_id << " Gemini: " << gem_id << "\n";
-        test.Register(market_id, expiration, kal_vid, pm_vid, gem_vid);
-        test_manager.Register(market_id);
+        markets.Register(market_id, expiration, kal_vid, pm_vid, gem_vid);
+        portfolio.Register(market_id);
     }
 
     if (!replay_path.empty()) {
-        test_manager.setKalshiCash(100);
-        test_manager.setPolymarketCash(100);
-        test_manager.setGeminiCash(100);
-        ifstream tape(replay_path);
-        if (!tape) {
+        int ticks = runReplay(replay_path, markets, false);
+        if (ticks < 0) {
             cerr << "could not open tape " << replay_path << "\n";
             return 1;
         }
-        string tline;
-        getline(tape, tline);
-        int ticks = 0;
-        while (getline(tape, tline)) {
-            TapeTick tk;
-            if (!tapeParseLine(tline, tk)) continue;
-            Market m = test.getMarketById(tk.market_id);
-            if (m.getMarketId() == 0) continue;
-            Snapshot snap;
-            if (tk.venue == Kalshi) snap = m.getKalshiSnapshot();
-            else if (tk.venue == Polymarket) snap = m.getPolymarketSnapshot();
-            else if (tk.venue == Gemini) snap = m.getGeminiSnapshot();
-            if (snap.venue_id == 0) continue;
-            assisiNowOverride() = tk.ts_ms / 1000;
-            test.price_update(snap.venue_id, tk.venue, tk.yes_bid, tk.yes_ask, tk.no_bid, tk.no_ask,
-                tk.yes_bid_n, tk.yes_ask_n, tk.no_bid_n, tk.no_ask_n);
-            on_tick(test, snap.venue_id);
-            ticks++;
-        }
-        Portfolio book = test_manager.getPortfolio();
+        Portfolio book = portfolio.getPortfolio();
         cout << "replay ticks=" << ticks
-             << " cash=" << book.cash
+             << " cash=" << (book.kalshi_cash + book.polymarket_cash + book.gemini_cash)
              << " kalshi=" << book.kalshi_cash
              << " polymarket=" << book.polymarket_cash
              << " gemini=" << book.gemini_cash << "\n";
@@ -496,27 +569,47 @@ int main(int argc, char** argv) {
     }
 
     monitorStart(8787);
-    monitorBind(test, test_manager, kalshi_ids_flipped, pm_ids_flipped, gem_ids_flipped);
+    monitorBind(markets, portfolio, kalshi_ids_flipped, pm_ids_flipped, gem_ids_flipped);
     if (!assisiClockOnly()) {
-        applyKalshiLots(kalshi_ids, test);
-        applyPolymarketLots(pm_ids, test);
-        applyGeminiLots(gem_ids, test);
+        applyKalshiLots(kalshi_ids, markets);
+        applyPolymarketLots(pm_ids, markets);
+        applyGeminiLots(gem_ids, markets);
         refreshVenueCash();
     }
-    monitorRefresh(test, test_manager, kalshi_ids_flipped, pm_ids_flipped, gem_ids_flipped);
+    monitorRefresh(markets, portfolio, kalshi_ids_flipped, pm_ids_flipped, gem_ids_flipped);
     monitorLog("monitor http://127.0.0.1:8787");
+    monitorLog(riskLimitsLogLine(limits));
 
     if (start_now) {
         monitorRequestTrade();
         if (assisiClockOnly()) monitorLog("CLOCK ONLY — feeds on, no orders");
         else monitorLog("trading start from --trade");
     } else {
-        monitorLog("ui only — pass --trade, --clock, or click START");
+        monitorLog("ui only — pass --trade, --clock, or choose a mode and click Start");
     }
 
     while (!monitorTradeRequested()) {
-        if (!assisiClockOnly()) refreshVenueCash();
-        monitorRefresh(test, test_manager, kalshi_ids_flipped, pm_ids_flipped, gem_ids_flipped);
+        std::string tape;
+        if (monitorReplayRequested(tape)) {
+            monitorReplayState(true, false, 0, tape);
+            monitorLog("replay start " + tape);
+            int ticks = runReplay(tape, markets, true);
+            if (ticks < 0) {
+                monitorLog("could not open tape " + tape);
+                monitorReplayState(false, false, 0, "");
+            } else {
+                Portfolio book = portfolio.getPortfolio();
+                monitorLog("replay done ticks=" + std::to_string(ticks)
+                    + " cash=" + moneyStr(book.kalshi_cash + book.polymarket_cash + book.gemini_cash)
+                    + " kalshi=" + moneyStr(book.kalshi_cash)
+                    + " polymarket=" + moneyStr(book.polymarket_cash)
+                    + " gemini=" + moneyStr(book.gemini_cash));
+                monitorLog("portfolio holds replay fills; restart the process to trade");
+                monitorReplayState(false, true, ticks, tape);
+            }
+        }
+        if (!assisiClockOnly() && !assisiReplay()) refreshVenueCash();
+        monitorRefresh(markets, portfolio, kalshi_ids_flipped, pm_ids_flipped, gem_ids_flipped);
         std::this_thread::sleep_for(std::chrono::milliseconds(400));
     }
 
@@ -527,9 +620,9 @@ int main(int argc, char** argv) {
         else monitorLog(std::string("could not open tape ") + record_path);
     }
 
-    std::thread kalshi_th([&test, &kalshi_ids]() { startKalshiWebsocket(test, kalshi_ids, on_tick); });
-    std::thread pm_th([&test, &pm_ids]() { startPolymarketWebsocket(test, pm_ids, on_tick); });
-    std::thread gem_th([&test, &gem_ids]() { startGeminiWebsocket(test, gem_ids, on_tick); });
+    std::thread kalshi_th([&markets, &kalshi_ids]() { startKalshiWebsocket(markets, kalshi_ids, on_tick); });
+    std::thread pm_th([&markets, &pm_ids]() { startPolymarketWebsocket(markets, pm_ids, on_tick); });
+    std::thread gem_th([&markets, &gem_ids]() { startGeminiWebsocket(markets, gem_ids, on_tick); });
     kalshi_th.join();
     pm_th.join();
     gem_th.join();
