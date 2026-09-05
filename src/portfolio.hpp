@@ -23,9 +23,9 @@ struct Portfolio {
     Position portfolio_[16];
     int position_count_;
     float cash;
-    float kalshi_cash;
-    float polymarket_cash;
-    float gemini_cash;
+    float kalshi_cash, kalshi_exposure;
+    float polymarket_cash, polymarket_exposure;
+    float gemini_cash, gemini_exposure;
     long int getPositionMarketId(long int marketId) { return marketId; }
 };
 
@@ -36,9 +36,9 @@ class PortfolioManager {
     public:
         PortfolioManager() {
             local_book.cash = 100.00;
-            local_book.kalshi_cash = 0.00;
-            local_book.polymarket_cash = 0.00;
-            local_book.gemini_cash = 0.00;
+            local_book.kalshi_cash = local_book.kalshi_exposure = 0.00;
+            local_book.polymarket_cash = local_book.polymarket_exposure = 0.00;
+            local_book.gemini_cash = local_book.gemini_exposure = 0.00;
             local_book.position_count_ = 0;
         }
 
@@ -79,7 +79,7 @@ class PortfolioManager {
             return local_book.cash;
         }
 
-        void addVenueLot(long int market_id, int yes, int no, float avg_yes, float avg_no) {
+        void addVenueLot(long int market_id, int venue, int yes, int no, float avg_yes, float avg_no) {
             std::lock_guard<std::mutex> lock(mtx_);
             for (int i = 0; i < local_book.position_count_; i++) {
                 if (local_book.portfolio_[i].market_id != market_id) continue;
@@ -92,6 +92,10 @@ class PortfolioManager {
                             + ((static_cast<float>(yes) / total) * avg_yes);
                     }
                     local_book.portfolio_[i].yes_count += yes;
+
+                    if(venue == Kalshi) { local_book.kalshi_exposure += yes*avg_yes; }
+                    else if(venue == Polymarket) { local_book.polymarket_exposure += yes*avg_yes; }
+                    else if(venue == Gemini) { local_book.gemini_exposure += yes*avg_yes; }
                 }
                 if (no > 0) {
                     float old_count = static_cast<float>(local_book.portfolio_[i].no_count);
@@ -102,6 +106,10 @@ class PortfolioManager {
                             + ((static_cast<float>(no) / total) * avg_no);
                     }
                     local_book.portfolio_[i].no_count += no;
+
+                    if(venue == Kalshi) { local_book.kalshi_exposure += no*avg_no; }
+                    else if(venue == Polymarket) { local_book.polymarket_exposure += no*avg_no; }
+                    else if(venue == Gemini) { local_book.gemini_exposure += no*avg_no; }
                 }
                 return;
             }
@@ -128,9 +136,19 @@ class PortfolioManager {
                         }
                         float spent = (order_fill.size * order_fill.price) + fees;
                         local_book.cash -= spent;
-                        if (order_fill.venue == Kalshi) local_book.kalshi_cash -= spent;
-                        else if (order_fill.venue == Polymarket) local_book.polymarket_cash -= spent;
-                        else if (order_fill.venue == Gemini) local_book.gemini_cash -= spent;
+
+                        if (order_fill.venue == Kalshi) {
+                            local_book.kalshi_cash -= spent;
+                            local_book.kalshi_exposure += spent;
+                        }
+                        else if (order_fill.venue == Polymarket) {
+                            local_book.polymarket_cash -= spent;
+                            local_book.polymarket_exposure += spent;
+                        }
+                        else if (order_fill.venue == Gemini) {
+                            local_book.gemini_cash -= spent;
+                            local_book.gemini_exposure += spent;
+                        }
                     }
                 }
             }

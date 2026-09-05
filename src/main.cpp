@@ -26,12 +26,14 @@
 #include "strategy.hpp"
 #include "execution.hpp"
 #include "portfolio.hpp"
+#include "risk.hpp"
 #include "latency.hpp"
 #include "tape.hpp"
 
 using namespace std;
 
 PortfolioManager test_manager;
+RiskLimits limits{0.70, 0.80, 0.10, 100};
 unordered_map<long int, std::string> kalshi_ids_flipped;
 unordered_map<long int, std::string> pm_ids_flipped;
 unordered_map<long int, std::string> gem_ids_flipped;
@@ -177,7 +179,7 @@ void applyKalshiLots(const unordered_map<std::string, long int>& kalshi_ids, Mar
         if (it == kalshi_ids.end()) continue;
         Snapshot s = md.getSnapshotByVenueId(it->second, Kalshi);
         if (s.market_id == 0) continue;
-        test_manager.addVenueLot(s.market_id, lot.yes_count, lot.no_count, lot.avg_yes, lot.avg_no);
+        test_manager.addVenueLot(s.market_id, s.venue, lot.yes_count, lot.no_count, lot.avg_yes, lot.avg_no);
         n++;
         if (lot.yes_count > 0) monitorLog(std::string("reconcile kalshi YES ") + lot.ticker);
         if (lot.no_count > 0) monitorLog(std::string("reconcile kalshi NO ") + lot.ticker);
@@ -197,7 +199,7 @@ void applyPolymarketLots(const unordered_map<std::string, long int>& ids, Market
         if (it == ids.end()) continue;
         Snapshot s = md.getSnapshotByVenueId(it->second, Polymarket);
         if (s.market_id == 0) continue;
-        test_manager.addVenueLot(s.market_id, lot.yes_count, lot.no_count, lot.avg_yes, lot.avg_no);
+        test_manager.addVenueLot(s.market_id, s.venue, lot.yes_count, lot.no_count, lot.avg_yes, lot.avg_no);
         n++;
         if (lot.yes_count > 0) monitorLog(std::string("reconcile polymarket YES ") + lot.slug);
         if (lot.no_count > 0) monitorLog(std::string("reconcile polymarket NO ") + lot.slug);
@@ -217,7 +219,7 @@ void applyGeminiLots(const unordered_map<std::string, long int>& ids, MarketData
         if (it == ids.end()) continue;
         Snapshot s = md.getSnapshotByVenueId(it->second, Gemini);
         if (s.market_id == 0) continue;
-        test_manager.addVenueLot(s.market_id, lot.yes_count, lot.no_count, lot.avg_yes, lot.avg_no);
+        test_manager.addVenueLot(s.market_id, s.venue, lot.yes_count, lot.no_count, lot.avg_yes, lot.avg_no);
         n++;
         if (lot.yes_count > 0) monitorLog(std::string("reconcile gemini YES ") + lot.symbol);
         if (lot.no_count > 0) monitorLog(std::string("reconcile gemini NO ") + lot.symbol);
@@ -340,7 +342,7 @@ void on_tick(MarketData& md, long int venue_id) {
     OrderIntent strat_yes_idea = strat.getYesOrderIntent();
     OrderIntent strat_no_idea = strat.getNoOrderIntent();
 
-    if (strat_yes_idea.size > 0 && strat_no_idea.size > 0) {
+    if (strat_yes_idea.size > 0 && strat_no_idea.size > 0 && approve_pair(strat_yes_idea, strat_no_idea, test_manager, limits)) {
         
         if (assisiClockOnly()) {
             monitorLog(latencySendLine() + std::string(" src=") + srcName(s.venue));
