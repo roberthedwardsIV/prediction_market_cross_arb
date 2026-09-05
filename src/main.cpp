@@ -106,10 +106,12 @@ static bool sendVenueOrder(OrderIntent& leg, const char* http_clock) {
 bool missingLegIntent(Market m, Position pos, OrderIntent& out) {
     out.market_id = m.getMarketId();
     out.buy = true;
-    out.size = 1;
+    out.size = std::abs(pos.yes_count - pos.no_count);
     out.venue = 0;
     out.venue_id = 0;
     out.limit_price = 0;
+    int book_n = 0;
+
     Snapshot snaps[3] = { m.getKalshiSnapshot(), m.getPolymarketSnapshot(), m.getGeminiSnapshot() };
     if (pos.yes_count > pos.no_count) {
         out.side = NoSided;
@@ -119,6 +121,7 @@ bool missingLegIntent(Market m, Position pos, OrderIntent& out) {
                 out.venue = snaps[i].venue;
                 out.venue_id = snaps[i].venue_id;
                 out.limit_price = snaps[i].no_ask;
+                book_n = snaps[i].no_ask_n;
             }
         }
     } else {
@@ -129,15 +132,18 @@ bool missingLegIntent(Market m, Position pos, OrderIntent& out) {
                 out.venue = snaps[i].venue;
                 out.venue_id = snaps[i].venue_id;
                 out.limit_price = snaps[i].yes_ask;
+                book_n = snaps[i].yes_ask_n;
             }
         }
     }
+
+    if(out.size > book_n) { out.size = book_n; }
+    
     return out.venue != 0 && out.limit_price > 0;
 }
 
 void liveSendLeg(OrderIntent leg) {
     auto t0 = std::chrono::steady_clock::now();
-    leg.size = 1;
     live_working = true;
     monitorSetWorking(true);
     monitorLog("missing leg start");
@@ -229,8 +235,6 @@ void applyGeminiLots(const unordered_map<std::string, long int>& ids, MarketData
 
 void liveSendPair(OrderIntent yes, OrderIntent no) {
     auto pair0 = std::chrono::steady_clock::now();
-    yes.size = 1;
-    no.size = 1;
     live_working = true;
     monitorSetWorking(true);
     monitorLog("live pair start");
@@ -342,8 +346,12 @@ void on_tick(MarketData& md, long int venue_id) {
     OrderIntent strat_yes_idea = strat.getYesOrderIntent();
     OrderIntent strat_no_idea = strat.getNoOrderIntent();
 
-    if (strat_yes_idea.size > 0 && strat_no_idea.size > 0 && approve_pair(strat_yes_idea, strat_no_idea, test_manager, limits)) {
-        
+    if (strat_yes_idea.size > 0 && strat_no_idea.size > 0) {
+        RiskReason reason = approve_pair(strat_yes_idea, strat_no_idea, test_manager, limits);
+        if(!(reason == RiskReason::Ok)) {
+            cout << "Risk rejected: " << ReasonLogger(reason) << "\n";
+            return;
+        }
         if (assisiClockOnly()) {
             monitorLog(latencySendLine() + std::string(" src=") + srcName(s.venue));
             monitorLog("clock only, no send");
@@ -351,8 +359,6 @@ void on_tick(MarketData& md, long int venue_id) {
         } else if (!monitorHalted()) {
             if (assisiLiveOrders() && !assisiReplay()) {
                 if (!live_working) {
-                    strat_yes_idea.size = 1;
-                    strat_no_idea.size = 1;
                     monitorLog(latencySendLine() + std::string(" src=") + srcName(s.venue));
                     std::thread([strat_yes_idea, strat_no_idea]() {
                         liveSendPair(strat_yes_idea, strat_no_idea);
@@ -519,15 +525,6 @@ int main(int argc, char** argv) {
     if (!record_path.empty()) {
         if (tapeOpen(record_path)) monitorLog(std::string("recording ticks to ") + record_path);
         else monitorLog(std::string("could not open tape ") + record_path);
-    }
-
-    if (!assisiClockOnly() && !assisiLiveOrders() && !kalshiIsProd() && !kalshi_ids.empty()) {
-        OrderIntent smoke;
-        smoke.side = YesSided;
-        smoke.buy = true;
-        smoke.size = 1;
-        smoke.limit_price = 0.32f;
-        sendKalshiOrder(kalshi_ids.begin()->first, smoke);
     }
 
     std::thread kalshi_th([&test, &kalshi_ids]() { startKalshiWebsocket(test, kalshi_ids, on_tick); });

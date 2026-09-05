@@ -28,7 +28,7 @@ TEST(Risk, ApprovesCheapPair) {
 
     auto yes = makeLeg(1, Kalshi, 1, 0.40f);
     auto no  = makeLeg(1, Polymarket, 1, 0.40f);
-    EXPECT_TRUE(approve_pair(yes, no, book, looseLimits()));
+    EXPECT_EQ(approve_pair(yes, no, book, looseLimits()), RiskReason::Ok);
 }
 
 TEST(Risk, RejectsInsufficientVenueCash) {
@@ -40,7 +40,7 @@ TEST(Risk, RejectsInsufficientVenueCash) {
 
     auto yes = makeLeg(1, Kalshi, 1, 0.40f);
     auto no  = makeLeg(1, Polymarket, 1, 0.40f);
-    EXPECT_FALSE(approve_pair(yes, no, book, looseLimits()));
+    EXPECT_EQ(approve_pair(yes, no, book, looseLimits()), RiskReason::VenueCash);
 }
 
 TEST(Risk, RejectsOverContractCap) {
@@ -55,5 +55,5 @@ TEST(Risk, RejectsOverContractCap) {
 
     auto yes = makeLeg(1, Kalshi, 1, 0.40f);
     auto no  = makeLeg(1, Polymarket, 1, 0.40f);
-    EXPECT_FALSE(approve_pair(yes, no, book, lim));
+    EXPECT_EQ(approve_pair(yes, no, book, lim), RiskReason::ContractCap);
 }
