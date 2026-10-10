@@ -32,8 +32,8 @@ inline std::string envValue(const std::string& key) {
     return "";
 }
 
-inline long long nextGeminiNonce() {
-    static std::atomic<long long> last{0};
+// If two sends sign in the same millisecond, bump so the second gets last+1.
+inline long long nextMonotonicMs(std::atomic<long long>& last) {
     long long now = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
     long long prev = last.load();
@@ -41,6 +41,21 @@ inline long long nextGeminiNonce() {
         long long cand = now > prev ? now : prev + 1;
         if (last.compare_exchange_weak(prev, cand)) return cand;
     }
+}
+
+inline long long nextGeminiNonce() {
+    static std::atomic<long long> last{0};
+    return nextMonotonicMs(last);
+}
+
+inline long long nextKalshiTimestamp() {
+    static std::atomic<long long> last{0};
+    return nextMonotonicMs(last);
+}
+
+inline long long nextPolymarketTimestamp() {
+    static std::atomic<long long> last{0};
+    return nextMonotonicMs(last);
 }
 
 inline bool kalshiIsProd() {

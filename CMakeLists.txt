@@ -1,9 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
 project(assisi LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+if(POLICY CMP0135)
+  cmake_policy(SET CMP0135 NEW)
 endif()
 
 include(FetchContent)
@@ -45,6 +50,9 @@ target_link_libraries(assisi PRIVATE
 )
 
 target_include_directories(assisi PRIVATE src src/kalshi src/polymarket src/gemini)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(assisi PRIVATE -Wall -Wextra)
+endif()
 
 enable_testing()
 
@@ -64,9 +72,13 @@ add_executable(assisi_tests
   tests/test_tape.cpp
   tests/test_strategy.cpp
   tests/test_ws_parse.cpp
+  tests/test_live_busy.cpp
 )
 target_include_directories(assisi_tests PRIVATE src)
 target_compile_definitions(assisi_tests PRIVATE ASSISI_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(assisi_tests PRIVATE -Wall -Wextra)
+endif()
 
 target_link_libraries(assisi_tests PRIVATE
   GTest::gtest_main
@@ -77,3 +89,6 @@ gtest_discover_tests(assisi_tests)
 
 add_executable(bench src/bench.cpp)
 target_include_directories(bench PRIVATE src)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(bench PRIVATE -Wall -Wextra)
+endif()

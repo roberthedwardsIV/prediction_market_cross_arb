@@ -13,10 +13,10 @@ struct Snapshot {
     long int market_id;
     long int venue_id;
     int venue;
-    float yes_bid;
-    float yes_ask;
-    float no_bid;
-    float no_ask;
+    int yes_bid;
+    int yes_ask;
+    int no_bid;
+    int no_ask;
     int yes_bid_n;
     int yes_ask_n;
     int no_bid_n;
@@ -40,7 +40,7 @@ class Market {
         s.market_id = 0;
         s.venue_id = 0;
         s.venue = venue;
-        s.yes_bid = s.yes_ask = s.no_bid = s.no_ask = 0.00;
+        s.yes_bid = s.yes_ask = s.no_bid = s.no_ask = 0;
         s.yes_bid_n = s.yes_ask_n = s.no_bid_n = s.no_ask_n = 0;
         return s;
     }
@@ -65,7 +65,7 @@ class Market {
             if (gemini_id) gemini_market_view.venue_id = gemini_id;
         }
 
-        void snapshot_update(long int venue_id, int venue, float yes_bid, float yes_ask, float no_bid, float no_ask,
+        void snapshot_update(long int venue_id, int venue, int yes_bid, int yes_ask, int no_bid, int no_ask,
             int yes_bid_n, int yes_ask_n, int no_bid_n, int no_ask_n) {
             if (venue == Kalshi) {
                 kalshi_market_view.venue_id = venue_id;
@@ -142,7 +142,7 @@ public:
         return it->second;
     }
 
-    int price_update(long int venue_id, int venue, float yes_bid, float yes_ask, float no_bid, float no_ask,
+    int price_update(long int venue_id, int venue, int yes_bid, int yes_ask, int no_bid, int no_ask,
         int yes_bid_n, int yes_ask_n, int no_bid_n, int no_ask_n) {
         SlotRef ref = slotForVenue(venue_id);
         if (ref.slot < 0 || ref.venue != venue) return -1;

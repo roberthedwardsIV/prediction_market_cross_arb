@@ -19,8 +19,8 @@ jobs:
       - name: Configure
         run: cmake -S . -B build
 
-      - name: Build tests
-        run: cmake --build build --target assisi_tests -j
+      - name: Build
+        run: cmake --build build --target assisi assisi_tests -j
 
       - name: Run tests
         run: ./build/assisi_tests

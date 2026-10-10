@@ -1,10 +1,12 @@
 #include "kalshi_http.hpp"
 #include "kalshi_env.hpp"
+#include "money.hpp"
+#include "json_find.hpp"
 
 #include <fstream>
 #include <iostream>
 #include <chrono>
-#include <cmath>
+#include <cstdlib>
 #include <vector>
 
 #include <openssl/evp.h>
@@ -53,10 +55,7 @@ KalshiHttpResult kalshiHttp(const std::string& method, const std::string& sign_p
         return out;
     }
 
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()
-    ).count();
-    std::string ts = std::to_string(ms);
+    std::string ts = std::to_string(nextKalshiTimestamp());
     std::string to_sign = ts + method + sign_path;
 
     EVP_MD_CTX* md_ctx = EVP_MD_CTX_new();
@@ -119,7 +118,7 @@ KalshiHttpResult kalshiHttp(const std::string& method, const std::string& sign_p
     return out;
 }
 
-bool refreshKalshiBalance(float& cash_out) {
+bool refreshKalshiBalance(int& cash_out) {
     auto r = kalshiHttp("GET", "/trade-api/v2/portfolio/balance", "");
     if (r.status != 200) {
         std::cout << "kalshi balance " << r.status << " " << r.error << "\n";
@@ -129,14 +128,16 @@ bool refreshKalshiBalance(float& cash_out) {
         nlohmann::json j = nlohmann::json::parse(r.body);
         if (j.contains("balance_dollars")) {
             if (j["balance_dollars"].is_string()) {
-                cash_out = std::stof(j["balance_dollars"].get<std::string>());
+                cash_out = parseCents(j["balance_dollars"].get<std::string>());
             } else {
-                cash_out = j["balance_dollars"].get<float>();
+                cash_out = parseCents(j["balance_dollars"].dump());
             }
             return true;
         }
         if (j.contains("balance")) {
-            cash_out = j["balance"].get<float>() / 100.0f;
+            if (j["balance"].is_number_integer()) cash_out = j["balance"].get<int>();
+            else if (j["balance"].is_string()) cash_out = jsonContracts(j["balance"].get<std::string>());
+            else cash_out = parseCents(j["balance"].dump());
             return true;
         }
     } catch (...) {
@@ -144,27 +145,22 @@ bool refreshKalshiBalance(float& cash_out) {
     return false;
 }
 
-static float jsonMoney(const nlohmann::json& j, const char* key) {
+static int jsonMoneyCents(const nlohmann::json& j, const char* key) {
     if (!j.contains(key)) return 0;
-    if (j[key].is_string()) {
-        try { return std::stof(j[key].get<std::string>()); } catch (...) { return 0; }
-    }
-    if (j[key].is_number()) return j[key].get<float>();
+    if (j[key].is_string()) return parseCents(j[key].get<std::string>());
+    if (j[key].is_number()) return parseCents(j[key].dump());
     return 0;
 }
 
 static int jsonCount(const nlohmann::json& j) {
     if (j.contains("position_fp")) {
-        try {
-            if (j["position_fp"].is_string()) return static_cast<int>(std::round(std::stof(j["position_fp"].get<std::string>())));
-            return static_cast<int>(std::round(j["position_fp"].get<float>()));
-        } catch (...) {}
+        if (j["position_fp"].is_string()) return jsonContracts(j["position_fp"].get<std::string>());
+        if (j["position_fp"].is_number()) return jsonContracts(j["position_fp"].dump());
     }
     if (j.contains("position")) {
-        try {
-            if (j["position"].is_number()) return j["position"].get<int>();
-            if (j["position"].is_string()) return std::stoi(j["position"].get<std::string>());
-        } catch (...) {}
+        if (j["position"].is_number_integer()) return j["position"].get<int>();
+        if (j["position"].is_string()) return jsonContracts(j["position"].get<std::string>());
+        if (j["position"].is_number()) return jsonContracts(j["position"].dump());
     }
     return 0;
 }
@@ -184,8 +180,8 @@ bool refreshKalshiPositions(std::vector<KalshiLot>& lots) {
             lot.ticker = p.value("ticker", "");
             int n = jsonCount(p);
             if (n == 0 || lot.ticker.empty()) continue;
-            float exposure = jsonMoney(p, "market_exposure_dollars");
-            float avg = std::abs(n) > 0 ? std::abs(exposure) / static_cast<float>(std::abs(n)) : 0;
+            int exposure = jsonMoneyCents(p, "market_exposure_dollars");
+            int avg = n != 0 ? std::abs(exposure) / std::abs(n) : 0;
             if (n > 0) {
                 lot.yes_count = n;
                 lot.avg_yes = avg;

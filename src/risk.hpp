@@ -1,10 +1,13 @@
 #pragma once
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include "portfolio.hpp"
 #include "strategy.hpp"
+#include "kalshi_env.hpp"
 
 enum class RiskReason {
     Ok,
@@ -49,31 +52,31 @@ inline std::string ReasonLogger(RiskReason reason) {
 }
 
 struct RiskLimits {
-    float max_market_pct;
-    float max_allocation_pct;
-    float venue_reserve_pct;
+    int max_market_pct;
+    int max_allocation_pct;
+    int venue_reserve_pct;
     int max_contracts_per_market;
-    float chase_reserve;
-    float max_drawdown;
+    int chase_reserve;
+    int max_drawdown;
 };
 
 struct RiskState {
     std::atomic<bool> halted{false};
     std::mutex mtx;
-    float realized_loss = 0.0f;
+    int realized_loss = 0;
 
     bool isHalted() const { return halted.load(); }
 
     void clearForTests() {
         halted.store(false);
         std::lock_guard<std::mutex> lock(mtx);
-        realized_loss = 0.0f;
+        realized_loss = 0;
     }
 };
 
 inline bool riskNoteFill(RiskState& state, const RiskLimits& limits, const Fill& fill) {
     if (state.isHalted()) return false;
-    float fee = takerFee(fill.venue, fill.price, fill.size);
+    int fee = takerFee(fill.venue, fill.price, fill.size);
     bool newly_tripped = false;
     {
         std::lock_guard<std::mutex> lock(state.mtx);
@@ -86,40 +89,39 @@ inline bool riskNoteFill(RiskState& state, const RiskLimits& limits, const Fill&
     return newly_tripped;
 }
 
-inline float nextChasePrice(float current) {
-    return std::round((current + 0.01f) * 100.0f) / 100.0f;
+inline int nextChasePrice(int current) {
+    return current + 1;
 }
 
-inline float chaseCeiling(float other_price, int other_venue, int chase_venue, float chase_reserve) {
-    float room = 1.0f - chase_reserve - other_price - takerFee(other_venue, other_price, 1);
-    float best = 0.0f;
+inline int chaseCeiling(int other_price, int other_venue, int chase_venue, int chase_reserve) {
+    int room = kDollarCents - chase_reserve - other_price - takerFee(other_venue, other_price, 1);
+    int best = 0;
     for (int c = 1; c <= 99; c++) {
-        float p = static_cast<float>(c) / 100.0f;
-        if (p + takerFee(chase_venue, p, 1) <= room + 1e-6f) best = p;
+        if (c + takerFee(chase_venue, c, 1) <= room) best = c;
     }
     return best;
 }
 
-inline bool canBumpChase(float current, float ceiling) {
-    return nextChasePrice(current) <= ceiling + 1e-6f;
+inline bool canBumpChase(int current, int ceiling) {
+    return nextChasePrice(current) <= ceiling;
 }
 
-inline float legCost(const OrderIntent& leg, int size) {
+inline int legCost(const OrderIntent& leg, int size) {
     return (size * leg.limit_price) + takerFee(leg.venue, leg.limit_price, size);
 }
 
 inline bool pairProfitableAtSize(const OrderIntent& yes, const OrderIntent& no, int size) {
     if (size < 1) return false;
-    return legCost(yes, size) + legCost(no, size) < static_cast<float>(size);
+    return legCost(yes, size) + legCost(no, size) < size * kDollarCents;
 }
 
 template <class CostFn>
-inline int fitSize(int size, float cap, CostFn cost) {
-    if (size < 1 || cap <= 0.0f) return 0;
+inline int fitSize(int size, int cap, CostFn cost) {
+    if (size < 1 || cap <= 0) return 0;
     int n = size;
-    float unit = cost(1);
-    if (unit > 0.0f) {
-        int est = static_cast<int>(cap / unit);
+    int unit = cost(1);
+    if (unit > 0) {
+        int est = cap / unit;
         if (est < n) n = est;
     }
     if (n < 0) n = 0;
@@ -157,12 +159,12 @@ inline RiskReason approve_pair(OrderIntent& yes, OrderIntent& no, const Portfoli
     }
     if (size < 1) return reject(RiskReason::VenueCash);
 
-    float keep = 1.0f - limits.venue_reserve_pct;
+    int keep = 100 - limits.venue_reserve_pct;
     auto reserveRoom = [&](int venue) {
-        float cash = p.venueCashGross(venue);
-        float exp = p.venueExposure(venue);
-        float reserved = p.venueReserved(venue);
-        return (cash + exp) * keep - exp - reserved;
+        int cash = p.venueCashGross(venue);
+        int exp = p.venueExposure(venue);
+        int reserved = p.venueReserved(venue);
+        return (cash + exp) * keep / 100 - exp - reserved;
     };
     if (same_venue) {
         size = fitSize(size, reserveRoom(yes.venue), pairCost);
@@ -172,20 +174,20 @@ inline RiskReason approve_pair(OrderIntent& yes, OrderIntent& no, const Portfoli
     }
     if (size < 1) return reject(RiskReason::VenueReserve);
 
-    float total_cash = p.totalCash();
-    float total_exposure = p.totalExposure();
-    if (total_cash == 0.0f) return reject(RiskReason::NoCash);
+    int total_cash = p.totalCash();
+    int total_exposure = p.totalExposure();
+    if (total_cash == 0) return reject(RiskReason::NoCash);
 
-    size = fitSize(size, (total_cash - p.totalReserved()) * limits.max_allocation_pct - total_exposure, pairCost);
+    size = fitSize(size, (total_cash - p.totalReserved()) * limits.max_allocation_pct / 100 - total_exposure, pairCost);
     if (size < 1) return reject(RiskReason::Allocation);
 
-    float total_equity = total_cash + total_exposure;
-    if (total_equity == 0.0f) return reject(RiskReason::NoEquity);
+    int total_equity = total_cash + total_exposure;
+    if (total_equity == 0) return reject(RiskReason::NoEquity);
 
-    float market_exposure =
+    int market_exposure =
         (ypos.average_yes_price * ypos.yes_count) +
         (npos.average_no_price * npos.no_count);
-    size = fitSize(size, total_equity * limits.max_market_pct - market_exposure, pairCost);
+    size = fitSize(size, total_equity * limits.max_market_pct / 100 - market_exposure, pairCost);
     if (size < 1) return reject(RiskReason::MarketPct);
 
     while (size >= 1 && !pairProfitableAtSize(yes, no, size)) {
@@ -204,14 +206,14 @@ inline RiskReason approve_pair(OrderIntent& yes, OrderIntent& no, PortfolioManag
 }
 
 inline bool reserve_pair(PortfolioManager& book, const OrderIntent& yes, const OrderIntent& no) {
-    float yes_cost = legCost(yes, yes.size);
-    float no_cost = legCost(no, no.size);
+    int yes_cost = legCost(yes, yes.size);
+    int no_cost = legCost(no, no.size);
     return book.tryReserveTwo(yes.venue, yes_cost, no.venue, no_cost);
 }
 
 inline void release_pair(PortfolioManager& book, const OrderIntent& yes, const OrderIntent& no) {
-    float yes_cost = legCost(yes, yes.size);
-    float no_cost = legCost(no, no.size);
+    int yes_cost = legCost(yes, yes.size);
+    int no_cost = legCost(no, no.size);
     book.releaseReserveTwo(yes.venue, yes_cost, no.venue, no_cost);
 }
 
@@ -223,30 +225,22 @@ inline void release_leg(PortfolioManager& book, const OrderIntent& leg) {
     book.releaseReserve(leg.venue, legCost(leg, leg.size));
 }
 
-#include <cstdio>
-#include <unordered_map>
-#include "kalshi_env.hpp"
-
 inline RiskLimits defaultRiskLimits() {
-    return RiskLimits{0.70f, 0.80f, 0.10f, 100, 0.01f, 10.0f};
-}
-
-inline float riskEnvFloat(const std::string& raw, float fallback) {
-    if (raw.empty()) return fallback;
-    try {
-        return std::stof(raw);
-    } catch (...) {
-        return fallback;
-    }
+    return RiskLimits{70, 80, 10, 100, 1, 1000};
 }
 
 inline int riskEnvInt(const std::string& raw, int fallback) {
     if (raw.empty()) return fallback;
-    try {
-        return std::stoi(raw);
-    } catch (...) {
-        return fallback;
+    int v = 0;
+    size_t i = 0;
+    bool any = false;
+    if (i < raw.size() && raw[i] == '-') return fallback;
+    while (i < raw.size() && raw[i] >= '0' && raw[i] <= '9') {
+        any = true;
+        v = v * 10 + (raw[i] - '0');
+        i++;
     }
+    return any ? v : fallback;
 }
 
 inline std::string riskEnvLookup(const std::unordered_map<std::string, std::string>* overrides,
@@ -261,21 +255,24 @@ inline std::string riskEnvLookup(const std::unordered_map<std::string, std::stri
 inline RiskLimits loadRiskLimits(const std::unordered_map<std::string, std::string>* overrides = nullptr) {
     RiskLimits d = defaultRiskLimits();
     RiskLimits lim;
-    lim.max_market_pct = riskEnvFloat(riskEnvLookup(overrides, "ASSISI_RISK_MAX_MARKET_PCT"), d.max_market_pct);
-    lim.max_allocation_pct = riskEnvFloat(riskEnvLookup(overrides, "ASSISI_RISK_MAX_ALLOCATION_PCT"), d.max_allocation_pct);
-    lim.venue_reserve_pct = riskEnvFloat(riskEnvLookup(overrides, "ASSISI_RISK_VENUE_RESERVE_PCT"), d.venue_reserve_pct);
+    lim.max_market_pct = parsePct(riskEnvLookup(overrides, "ASSISI_RISK_MAX_MARKET_PCT"), d.max_market_pct);
+    lim.max_allocation_pct = parsePct(riskEnvLookup(overrides, "ASSISI_RISK_MAX_ALLOCATION_PCT"), d.max_allocation_pct);
+    lim.venue_reserve_pct = parsePct(riskEnvLookup(overrides, "ASSISI_RISK_VENUE_RESERVE_PCT"), d.venue_reserve_pct);
     lim.max_contracts_per_market = riskEnvInt(riskEnvLookup(overrides, "ASSISI_RISK_MAX_CONTRACTS"), d.max_contracts_per_market);
-    lim.chase_reserve = riskEnvFloat(riskEnvLookup(overrides, "ASSISI_RISK_CHASE_RESERVE"), d.chase_reserve);
-    lim.max_drawdown = riskEnvFloat(riskEnvLookup(overrides, "ASSISI_RISK_MAX_DRAWDOWN"), d.max_drawdown);
+    std::string chase = riskEnvLookup(overrides, "ASSISI_RISK_CHASE_RESERVE");
+    lim.chase_reserve = chase.empty() ? d.chase_reserve : parseCents(chase);
+    std::string dd = riskEnvLookup(overrides, "ASSISI_RISK_MAX_DRAWDOWN");
+    lim.max_drawdown = dd.empty() ? d.max_drawdown : parseCents(dd);
     return lim;
 }
 
 inline std::string riskLimitsLogLine(const RiskLimits& lim) {
     char buf[256];
     std::snprintf(buf, sizeof(buf),
-        "risk limits max_market_pct=%.2f max_allocation_pct=%.2f venue_reserve_pct=%.2f "
-        "max_contracts=%d chase_reserve=%.2f max_drawdown=%.2f",
+        "risk limits max_market_pct=%d max_allocation_pct=%d venue_reserve_pct=%d "
+        "max_contracts=%d chase_reserve=%s max_drawdown=%s",
         lim.max_market_pct, lim.max_allocation_pct, lim.venue_reserve_pct,
-        lim.max_contracts_per_market, lim.chase_reserve, lim.max_drawdown);
+        lim.max_contracts_per_market, formatCents(lim.chase_reserve).c_str(),
+        formatCents(lim.max_drawdown).c_str());
     return std::string(buf);
 }

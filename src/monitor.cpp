@@ -24,7 +24,7 @@
 static std::mutex mon_mtx;
 static std::deque<std::string> mon_log;
 static nlohmann::json mon_status = nlohmann::json::object();
-static bool mon_working = false;
+static int mon_working_count = 0;
 static bool mon_trading = false;
 static std::atomic<bool> mon_trade_req{false};
 static std::atomic<bool> mon_halted{false};
@@ -125,9 +125,19 @@ void monitorLog(const std::string& line) {
     logWorker().push(std::time(nullptr), line);
 }
 
-void monitorSetWorking(bool v) {
+void monitorWorkingBegin() {
     std::lock_guard<std::mutex> lock(mon_mtx);
-    mon_working = v;
+    mon_working_count++;
+}
+
+void monitorWorkingEnd() {
+    std::lock_guard<std::mutex> lock(mon_mtx);
+    if (mon_working_count > 0) mon_working_count--;
+}
+
+int monitorWorkingCount() {
+    std::lock_guard<std::mutex> lock(mon_mtx);
+    return mon_working_count;
 }
 
 void monitorSetTrading(bool v) {
@@ -222,7 +232,6 @@ void monitorRefresh(MarketData& md, PortfolioManager& pm,
     j["clock"] = assisiClockOnly();
     j["halted"] = monitorHalted();
     j["prod"] = kalshiIsProd();
-    j["working"] = mon_working;
     Portfolio p = pm.getPortfolio();
     j["cash"]["kalshi"] = p.kalshi_cash;
     j["cash"]["polymarket"] = p.polymarket_cash;
@@ -256,19 +265,19 @@ void monitorRefresh(MarketData& md, PortfolioManager& pm,
         row["g_no"] = {g.no_bid, g.no_ask};
         row["g_yes_n"] = g.yes_ask_n;
         row["g_no_n"] = g.no_ask_n;
-        float yes = 0, no = 0;
+        int yes = 0, no = 0;
         int yv = 0, nv = 0;
         Snapshot snaps[3] = {k, pmkt, g};
         for (int v = 0; v < 3; v++) {
             if (snaps[v].yes_ask != 0 && snaps[v].yes_ask_n >= 1 && (yes == 0 || snaps[v].yes_ask < yes)) { yes = snaps[v].yes_ask; yv = snaps[v].venue; }
             if (snaps[v].no_ask != 0 && snaps[v].no_ask_n >= 1 && (no == 0 || snaps[v].no_ask < no)) { no = snaps[v].no_ask; nv = snaps[v].venue; }
         }
-        float fees = (yes != 0 && no != 0) ? takerFee(yv, yes, 1) + takerFee(nv, no, 1) : 0;
-        float pair = yes + no + fees;
+        int fees = (yes != 0 && no != 0) ? takerFee(yv, yes, 1) + takerFee(nv, no, 1) : 0;
+        int pair = yes + no + fees;
         row["best_yes"] = yes;
         row["best_no"] = no;
         row["pair"] = pair;
-        row["edge"] = (yes != 0 && no != 0) ? (1.0f - pair) : 0;
+        row["edge"] = (yes != 0 && no != 0) ? (kDollarCents - pair) : 0;
         row["expired"] = (mkt.getExpirationDate() <= static_cast<long int>(std::time(nullptr)));
         row["yv"] = yv;
         row["nv"] = nv;
@@ -294,7 +303,8 @@ void monitorRefresh(MarketData& md, PortfolioManager& pm,
     nlohmann::json logs = nlohmann::json::array();
     {
         std::lock_guard<std::mutex> lock(mon_mtx);
-        j["working"] = mon_working;
+        j["working"] = mon_working_count > 0;
+        j["working_count"] = mon_working_count;
         j["trading"] = mon_trading;
         j["replay"] = mon_replay_running;
         j["replay_done"] = mon_replay_done;
@@ -361,7 +371,7 @@ void monitorStart(int port) {
             if (uri == "/api/stop" && (request->method == "POST" || request->method == "GET")) {
                 headers["Content-Type"] = "application/json";
                 monitorHalt();
-                monitorLog("STOP — no new pairs");
+                monitorLog("STOP: no new pairs");
                 return std::make_shared<ix::HttpResponse>(200, "OK", ix::HttpErrorCode::Ok, headers, "{\"ok\":true}");
             }
             if (uri == "/api/tapes" && request->method == "GET") {

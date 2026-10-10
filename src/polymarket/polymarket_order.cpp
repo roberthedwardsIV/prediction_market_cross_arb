@@ -5,6 +5,8 @@
 #include "polymarket_order.hpp"
 #include "kalshi_env.hpp"
 #include "polymarket_http.hpp"
+#include "money.hpp"
+#include "json_find.hpp"
 
 PolymarketOrderResult sendPolymarketOrder(std::string slug, OrderIntent idea) {
     PolymarketOrderResult result;
@@ -13,14 +15,12 @@ PolymarketOrderResult sendPolymarketOrder(std::string slug, OrderIntent idea) {
     j["marketSlug"] = slug;
     j["type"] = "ORDER_TYPE_LIMIT";
     j["quantity"] = idea.size;
-    char pbuf[16];
-    std::snprintf(pbuf, sizeof(pbuf), "%.4f", idea.limit_price);
-    j["price"]["value"] = pbuf;
+    j["price"]["value"] = formatCents4(idea.limit_price);
     j["price"]["currency"] = "USD";
-    if (idea.side == YesSided) {
-        j["intent"] = "ORDER_INTENT_BUY_LONG";
+    if (idea.buy) {
+        j["intent"] = (idea.side == YesSided) ? "ORDER_INTENT_BUY_LONG" : "ORDER_INTENT_BUY_SHORT";
     } else {
-        j["intent"] = "ORDER_INTENT_BUY_SHORT";
+        j["intent"] = (idea.side == YesSided) ? "ORDER_INTENT_SELL_LONG" : "ORDER_INTENT_SELL_SHORT";
     }
     if (assisiLiveOrders()) {
         j["tif"] = "TIME_IN_FORCE_FILL_OR_KILL";
@@ -38,21 +38,21 @@ PolymarketOrderResult sendPolymarketOrder(std::string slug, OrderIntent idea) {
     }
     try {
         nlohmann::json r = nlohmann::json::parse(resp.body);
-        float filled = 0;
-        float px = 0;
+        int filled = 0;
+        int px = 0;
         if (r.contains("executions") && r["executions"].is_array()) {
             for (auto& e : r["executions"]) {
                 std::string t = e.value("type", "");
                 if (t.find("FILL") == std::string::npos) continue;
-                float sh = 0;
+                int sh = 0;
                 if (e.contains("lastShares")) {
-                    if (e["lastShares"].is_string()) sh = std::stof(e["lastShares"].get<std::string>());
-                    else if (e["lastShares"].is_number()) sh = e["lastShares"].get<float>();
+                    sh = jsonContracts(e["lastShares"].is_string()
+                        ? e["lastShares"].get<std::string>() : e["lastShares"].dump());
                 }
                 filled += sh;
                 if (e.contains("lastPx") && e["lastPx"].is_object() && e["lastPx"].contains("value")) {
                     auto v = e["lastPx"]["value"];
-                    px = v.is_string() ? std::stof(v.get<std::string>()) : v.get<float>();
+                    px = parseCents(v.is_string() ? v.get<std::string>() : v.dump());
                 }
             }
         }
@@ -61,10 +61,10 @@ PolymarketOrderResult sendPolymarketOrder(std::string slug, OrderIntent idea) {
     } catch (...) {
         return result;
     }
-    if (assisiLiveOrders() && result.fill_count <= 0.0f) {
+    if (assisiLiveOrders() && result.fill_count <= 0) {
         std::cout << "polymarket FOK no fill\n";
         return result;
     }
-    result.ok = result.fill_count > 0.0f;
+    result.ok = result.fill_count > 0;
     return result;
 }

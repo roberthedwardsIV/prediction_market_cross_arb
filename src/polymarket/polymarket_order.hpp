@@ -5,8 +5,8 @@
 
 struct PolymarketOrderResult {
     bool ok = false;
-    float fill_count = 0;
-    float fill_price = 0;
+    int fill_count = 0;
+    int fill_price = 0;
 };
 
 PolymarketOrderResult sendPolymarketOrder(std::string slug, OrderIntent idea);

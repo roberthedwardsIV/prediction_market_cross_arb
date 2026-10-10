@@ -6,6 +6,8 @@ tapes/
 build/
 src/Test
 markets.csv
+markets_*.csv
+!markets_sample.csv
 ticks.csv
 latency.csv
 bench_latency.csv

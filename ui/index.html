@@ -335,7 +335,7 @@
         <div class="row full"><div class="k">Size</div><div class="v">70% of the thinner top-of-book ask; same size on both legs.</div></div>
         <div class="row full"><div class="k">Risk</div><div class="v">Shrinks to fit contract cap, venue cash, reserve, allocation, market share.</div></div>
         <div class="row full"><div class="k">Live</div><div class="v">Real REST orders only when the process has ASSISI_LIVE=1 and Live is selected.</div></div>
-        <div class="row full"><div class="k">Chase</div><div class="v">Missing leg sized to |yes − no| imbalance, capped by book.</div></div>
+        <div class="row full"><div class="k">Flatten</div><div class="v">If only one side fills, sell the leftover at 1 cent. Kalshi leftover NO is closed by buying YES at 99 cents.</div></div>
       </div>
     </section>
     <section class="log">
@@ -349,12 +349,12 @@ const $ = id => document.getElementById(id);
 
 function money(v) {
   if (v === undefined || v === null || Number.isNaN(Number(v))) return "—";
-  return Number(v).toFixed(2);
+  return (Number(v) / 100).toFixed(2);
 }
 
 function px(a, nAsk) {
   if (!a || a[1] === undefined || a[1] === null || Number(a[1]) === 0) return "—";
-  let s = Number(a[0]).toFixed(2) + "/" + Number(a[1]).toFixed(2);
+  let s = (Number(a[0]) / 100).toFixed(2) + "/" + (Number(a[1]) / 100).toFixed(2);
   if (nAsk !== undefined && nAsk !== null && Number(nAsk) > 0) s += " ×" + Number(nAsk);
   return s;
 }
@@ -384,7 +384,8 @@ async function pull() {
     else setStatus($("mode"), "Paper", "info");
 
     setStatus($("kalshi_env"), j.prod ? "Kalshi prod" : "Kalshi demo", j.prod ? "warn" : "");
-    setStatus($("work"), j.working ? "Working" : "Idle", j.working ? "warn" : "");
+    const workN = Number(j.working_count || 0);
+    setStatus($("work"), workN > 0 ? ("Working (" + workN + ")") : "Idle", workN > 0 ? "warn" : "");
     if (j.halted) setStatus($("trade"), "Halted", "bad");
     else if (j.trading) setStatus($("trade"), "Trading", "on");
     else setStatus($("trade"), "Standby", "");
@@ -440,7 +441,7 @@ async function pull() {
         "<td>" + px(b.g_yes, b.g_yes_n) + "</td>" +
         "<td>" + px(b.g_no, b.g_no_n) + "</td>" +
         "<td class='num'>" + money(b.pair) + "</td>" +
-        "<td class='num edge'>" + (b.edge > 0 ? ("+" + Number(b.edge).toFixed(3)) : Number(b.edge || 0).toFixed(3)) + "</td>";
+        "<td class='num edge'>" + (b.edge > 0 ? ("+" + (Number(b.edge) / 100).toFixed(3)) : (Number(b.edge || 0) / 100).toFixed(3)) + "</td>";
       pb.appendChild(tr);
     });
     $("books_empty").style.display = bookRows.length ? "none" : "block";

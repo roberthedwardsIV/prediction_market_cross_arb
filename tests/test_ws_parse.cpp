@@ -30,8 +30,8 @@ TEST(WsParse, PolymarketNestedQtyNotInvented) {
     ParsedBook book = parsePolymarketBookJson(body);
     ASSERT_TRUE(book.ok);
     EXPECT_EQ(book.id, "paccc-usse-midterms-2026-11-03-rep");
-    EXPECT_FLOAT_EQ(book.yes_bid, 0.42f);
-    EXPECT_FLOAT_EQ(book.yes_ask, 0.44f);
+    EXPECT_EQ(book.yes_bid, 42);
+    EXPECT_EQ(book.yes_ask, 44);
     EXPECT_EQ(book.yes_bid_n, 12);
     EXPECT_EQ(book.yes_ask_n, 7);
     EXPECT_NE(book.yes_bid_n, 1);
@@ -41,8 +41,8 @@ TEST(WsParse, PolymarketNestedQtyNotInvented) {
 TEST(WsParse, PolymarketMissingSizeIsZeroNotOne) {
     ParsedBook book = parsePolymarketBookJson(readFixture("polymarket_best_no_size.json"));
     ASSERT_TRUE(book.ok);
-    EXPECT_FLOAT_EQ(book.yes_bid, 0.31f);
-    EXPECT_FLOAT_EQ(book.yes_ask, 0.33f);
+    EXPECT_EQ(book.yes_bid, 31);
+    EXPECT_EQ(book.yes_ask, 33);
     EXPECT_EQ(book.yes_bid_n, 0);
     EXPECT_EQ(book.yes_ask_n, 0);
 }
@@ -51,8 +51,8 @@ TEST(WsParse, KalshiTickerSizes) {
     ParsedBook book = parseKalshiTickerJson(readFixture("kalshi_ticker.json"));
     ASSERT_TRUE(book.ok);
     EXPECT_EQ(book.id, "CONTROLS-2026-R");
-    EXPECT_FLOAT_EQ(book.yes_bid, 0.40f);
-    EXPECT_FLOAT_EQ(book.yes_ask, 0.42f);
+    EXPECT_EQ(book.yes_bid, 40);
+    EXPECT_EQ(book.yes_ask, 42);
     EXPECT_EQ(book.yes_bid_n, 10);
     EXPECT_EQ(book.yes_ask_n, 5);
 }
@@ -69,7 +69,7 @@ TEST(WsParse, KalshiMissingSizeUnknownIsOne) {
 
 TEST(WsParse, OrderMissingFillCountDoesNotInvent) {
     int size = 99;
-    float price = 1.0f;
-    EXPECT_FALSE(takeReportedFill(0.0f, 0.50f, 0.40f, size, price));
+    int price = 100;
+    EXPECT_FALSE(takeReportedFill(0, 50, 40, size, price));
     EXPECT_EQ(size, 0);
 }

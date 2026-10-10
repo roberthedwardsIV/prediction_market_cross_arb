@@ -1,25 +1,28 @@
 #pragma once
 
-#include <cmath>
 #include <algorithm>
-
 #include "market_data.hpp"
+#include "money.hpp"
 
-inline float takerFee(int venue, float price, int contracts) {
-    float p = price;
-    if (p < 0.01f) p = 0.01f;
-    if (p > 0.99f) p = 0.99f;
-    float n = static_cast<float>(contracts);
+// Venue taker fees in cents. Same published formulas, integer ceil/round.
+inline int takerFee(int venue, int price_cents, int contracts) {
+    int p = clampPriceCents(price_cents);
+    int n = contracts;
+    if (n < 1) return 0;
     if (venue == Kalshi) {
-        return std::ceil(0.07f * n * p * (1.0f - p) * 100.0f) / 100.0f;
+        // ceil(0.07 * n * p * (1-p) * 100) / 100 dollars -> ceil(7*n*p*(100-p)/10000) cents
+        return static_cast<int>((7LL * n * p * (100 - p) + 9999) / 10000);
     }
     if (venue == Polymarket) {
-        return std::round(0.06f * n * p * (1.0f - p) * 100.0f) / 100.0f;
+        // round(0.06 * n * p * (1-p) * 100) / 100 dollars
+        return static_cast<int>((6LL * n * p * (100 - p) + 5000) / 10000);
     }
     if (venue == Gemini) {
-        return std::round(0.05f * n * std::min(p, 1.0f - p) * 100.0f) / 100.0f;
+        // round(0.05 * n * min(p,1-p) * 100) / 100 dollars
+        int m = std::min(p, 100 - p);
+        return static_cast<int>((5LL * n * m + 50) / 100);
     }
-    return 0.00;
+    return 0;
 }
 
 struct OrderIntent {
@@ -29,10 +32,11 @@ struct OrderIntent {
     bool buy;
     int side;
     int size;
-    float limit_price;
+    int limit_price;
 };
 
 class Strategy {
+    static constexpr int kBookTakePct = 70;
     OrderIntent next_yes_move, next_no_move;
 
     public:
@@ -40,21 +44,24 @@ class Strategy {
             next_yes_move.market_id = 0;
             next_yes_move.venue = 0;
             next_yes_move.venue_id = 0;
-            next_yes_move.buy = 0;
+            next_yes_move.buy = false;
             next_yes_move.side = YesSided;
             next_yes_move.size = 0;
-            next_yes_move.limit_price = 0.00;
+            next_yes_move.limit_price = 0;
 
             next_no_move.market_id = 0;
             next_no_move.venue = 0;
             next_no_move.venue_id = 0;
-            next_no_move.buy = 0;
+            next_no_move.buy = false;
             next_no_move.side = NoSided;
             next_no_move.size = 0;
-            next_no_move.limit_price = 0.00;
+            next_no_move.limit_price = 0;
         }
 
-        void strategize(Market market, long int now, float kalshi_cash, float polymarket_cash, float gemini_cash) {
+        void strategize(Market market, long int now,
+                        int /*kalshi_cash*/, int /*polymarket_cash*/, int /*gemini_cash*/) {
+            next_yes_move.size = 0;
+            next_no_move.size = 0;
             if (market.getExpirationDate() <= now) {
                 return;
             }
@@ -81,17 +88,15 @@ class Strategy {
                 }
             }
 
-            float fees = takerFee(lowest_no_ask.venue, lowest_no_ask.no_ask, 1) + takerFee(lowest_yes_ask.venue, lowest_yes_ask.yes_ask, 1);
-            float pair = fees + lowest_yes_ask.yes_ask + lowest_no_ask.no_ask;
+            int fees = takerFee(lowest_no_ask.venue, lowest_no_ask.no_ask, 1)
+                + takerFee(lowest_yes_ask.venue, lowest_yes_ask.yes_ask, 1);
+            int pair = fees + lowest_yes_ask.yes_ask + lowest_no_ask.no_ask;
 
-            if (lowest_no_ask.venue_id != 0 && lowest_yes_ask.venue_id != 0 && pair < 1.0f) {
-
+            if (lowest_no_ask.venue_id != 0 && lowest_yes_ask.venue_id != 0 && pair < kDollarCents) {
                 int book = std::min(lowest_yes_ask.yes_ask_n, lowest_no_ask.no_ask_n);
-                int size = (book * 70) / 100;
+                int size = (book * kBookTakePct) / 100;
                 if (size < 1) {
-                    next_yes_move.size = 0;
-                    next_no_move.size = 0;
-                    return; 
+                    return;
                 }
                 next_no_move.market_id = lowest_no_ask.market_id;
                 next_no_move.venue_id = lowest_no_ask.venue_id;

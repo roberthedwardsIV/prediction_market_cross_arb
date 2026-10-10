@@ -63,7 +63,7 @@ inline bool jsonFirstObjectSlice(const std::string& body, const char* array_key,
     if (p == std::string::npos) return false;
     size_t obj = body.find('{', p);
     if (obj == std::string::npos) return false;
-    // Must brace-match: Polymarket US levels nest {"px":{"value":"..."}, "qty":"..."}.
+    // Brace-match: Polymarket levels nest {"px":{"value":"..."}, "qty":"..."}.
     // Stopping at the first '}' truncates before qty (that was the all-sizes-1/0 bug).
     int depth = 0;
     bool in_str = false;
@@ -85,16 +85,27 @@ inline bool jsonFirstObjectSlice(const std::string& body, const char* array_key,
 
 inline int jsonContracts(const std::string& s) {
     if (s.empty()) return 0;
-    try {
-        float n = std::stof(s);
-        if (n <= 0.0f) return 0;
-        // US book qty can be fractional (docs: "0.50", "2.50"). Keep whole contracts.
-        int whole = static_cast<int>(n);
-        if (whole < 1 && n > 0.0f) return 1; // sub-1 share still means some size at that level
-        return whole;
-    } catch (...) {
-        return 0;
+    size_t i = 0;
+    while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '"')) i++;
+    if (i < s.size() && s[i] == '-') return 0;
+    int whole = 0;
+    bool any = false;
+    while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
+        any = true;
+        whole = whole * 10 + (s[i] - '0');
+        i++;
     }
+    bool frac_nonzero = false;
+    if (i < s.size() && s[i] == '.') {
+        i++;
+        while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
+            if (s[i] != '0') frac_nonzero = true;
+            i++;
+        }
+    }
+    if (!any && !frac_nonzero) return 0;
+    if (whole < 1 && frac_nonzero) return 1;
+    return whole;
 }
 
 // Missing size field is unknown, not empty. Live size is 1, so allow that side.

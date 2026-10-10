@@ -9,7 +9,7 @@ TEST(Tape, ParsesValidLine) {
     EXPECT_EQ(t.ts_ms, 1000);
     EXPECT_EQ(t.market_id, 1);
     EXPECT_EQ(t.venue, Kalshi);
-    EXPECT_FLOAT_EQ(t.yes_ask, 0.42f);
+    EXPECT_EQ(t.yes_ask, 42);
 }
 
 TEST(Tape, RejectsHeader) {

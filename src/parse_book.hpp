@@ -2,11 +2,12 @@
 
 #include <string>
 #include "json_find.hpp"
+#include "money.hpp"
 
 struct ParsedBook {
     std::string id;
-    float yes_bid = 0;
-    float yes_ask = 0;
+    int yes_bid = 0;
+    int yes_ask = 0;
     int yes_bid_n = 0;
     int yes_ask_n = 0;
     bool ok = false;
@@ -41,12 +42,9 @@ inline ParsedBook parsePolymarketBookJson(const std::string& body) {
             return out;
         }
     }
-    try {
-        out.yes_bid = std::stof(bid_s);
-        out.yes_ask = std::stof(ask_s);
-    } catch (...) {
-        return out;
-    }
+    out.yes_bid = parseCents(bid_s);
+    out.yes_ask = parseCents(ask_s);
+    if (out.yes_bid <= 0 && out.yes_ask <= 0) return out;
     out.yes_bid_n = have_bid_n ? jsonContracts(bid_n_s) : 0;
     out.yes_ask_n = have_ask_n ? jsonContracts(ask_n_s) : 0;
     out.ok = true;
@@ -63,12 +61,9 @@ inline ParsedBook parseKalshiTickerJson(const std::string& body) {
         !jsonField(body, "market_ticker", out.id)) {
         return out;
     }
-    try {
-        out.yes_bid = std::stof(bid_s);
-        out.yes_ask = std::stof(ask_s);
-    } catch (...) {
-        return out;
-    }
+    out.yes_bid = parseCents(bid_s);
+    out.yes_ask = parseCents(ask_s);
+    if (out.yes_bid <= 0 && out.yes_ask <= 0) return out;
     out.yes_bid_n = jsonSizeOrUnknown(jsonField(body, "yes_bid_size_fp", bid_n_s), bid_n_s);
     out.yes_ask_n = jsonSizeOrUnknown(jsonField(body, "yes_ask_size_fp", ask_n_s), ask_n_s);
     out.ok = true;

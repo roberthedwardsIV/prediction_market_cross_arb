@@ -1,8 +1,9 @@
 #include "gemini_http.hpp"
 #include "kalshi_env.hpp"
+#include "money.hpp"
+#include "json_find.hpp"
 
 #include <iostream>
-#include <cmath>
 #include <vector>
 #include <sstream>
 #include <iomanip>
@@ -87,16 +88,14 @@ static void logGeminiFail(const char* what, const GeminiHttpResult& r) {
     std::cout << "gemini " << what << " " << r.status << " " << r.error << " " << body << "\n";
 }
 
-static float jsonMoney(const nlohmann::json& j, const char* key) {
+static int jsonMoneyCents(const nlohmann::json& j, const char* key) {
     if (!j.contains(key)) return 0;
-    if (j[key].is_string()) {
-        try { return std::stof(j[key].get<std::string>()); } catch (...) { return 0; }
-    }
-    if (j[key].is_number()) return j[key].get<float>();
+    if (j[key].is_string()) return parseCents(j[key].get<std::string>());
+    if (j[key].is_number()) return parseCents(j[key].dump());
     return 0;
 }
 
-bool refreshGeminiBalance(float& cash_out) {
+bool refreshGeminiBalance(int& cash_out) {
     auto r = geminiHttp("POST", "/v1/balances", "");
     if (r.status != 200) {
         logGeminiFail("balance", r);
@@ -108,8 +107,8 @@ bool refreshGeminiBalance(float& cash_out) {
         for (auto& b : arr) {
             std::string ccy = b.value("currency", "");
             if (ccy != "USD" && ccy != "usd") continue;
-            cash_out = jsonMoney(b, "available");
-            if (cash_out == 0) cash_out = jsonMoney(b, "amount");
+            cash_out = jsonMoneyCents(b, "available");
+            if (cash_out == 0) cash_out = jsonMoneyCents(b, "amount");
             return true;
         }
     } catch (...) {
@@ -134,12 +133,20 @@ bool refreshGeminiPositions(std::vector<GeminiLot>& lots) {
             lot.symbol = p.value("symbol", p.value("instrumentSymbol", ""));
             if (lot.symbol.empty()) continue;
             std::string outcome = p.value("outcome", "yes");
-            float qty = jsonMoney(p, "totalQuantity");
-            if (qty == 0) qty = jsonMoney(p, "positionQuantity");
-            if (qty == 0) qty = std::abs(jsonMoney(p, "position"));
-            int n = static_cast<int>(std::round(qty));
+            int n = jsonContracts(p.contains("totalQuantity")
+                ? (p["totalQuantity"].is_string() ? p["totalQuantity"].get<std::string>() : p["totalQuantity"].dump())
+                : "");
+            if (n == 0 && p.contains("positionQuantity")) {
+                n = jsonContracts(p["positionQuantity"].is_string()
+                    ? p["positionQuantity"].get<std::string>() : p["positionQuantity"].dump());
+            }
+            if (n == 0 && p.contains("position")) {
+                n = jsonContracts(p["position"].is_string()
+                    ? p["position"].get<std::string>() : p["position"].dump());
+                if (n < 0) n = -n;
+            }
             if (n == 0) continue;
-            float avg = jsonMoney(p, "avgPrice");
+            int avg = jsonMoneyCents(p, "avgPrice");
             if (outcome == "no" || outcome == "NO") {
                 lot.no_count = n;
                 lot.avg_no = avg;

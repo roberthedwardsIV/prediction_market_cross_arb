@@ -2,6 +2,8 @@
 #include "kalshi_env.hpp"
 #include "latency.hpp"
 #include "parse_book.hpp"
+#include "ws_reconnect.hpp"
+#include "monitor.hpp"
 
 #include <iostream>
 #include <chrono>
@@ -9,6 +11,7 @@
 #include <string>
 #include <fstream>
 #include <vector>
+#include <atomic>
 
 #include <ixwebsocket/IXNetSystem.h>
 #include <ixwebsocket/IXWebSocket.h>
@@ -18,66 +21,30 @@
 #include <openssl/rsa.h>
 #include <nlohmann/json.hpp>
 
-bool startKalshiWebsocket(MarketData& md, std::unordered_map<std::string, long int>& kalshi_ids, void (*on_tick)(MarketData&, long int)) {
-    ix::initNetSystem();
-
-    ix::WebSocket webSocket;
-    ix::WebSocketHttpHeaders headers;
-    
-    std::ifstream env_file(".env");
-    if (!env_file) {
-        std::cerr << "could not open .env\n";
-        return 1;
-    }
-
-    std::string key_id, pem_path;
-    std::string line;
-    while (std::getline(env_file, line)) {
-        auto eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        std::string name = line.substr(0, eq);
-        std::string val  = line.substr(eq + 1);
-        if (name == "KALSHI_API_KEY") {
-            key_id = val;
-        }
-        if (name == "KALSHI_PRIVATE_KEY_PATH") {
-            pem_path = val;
-        }
-    }
-    if (key_id.empty()) {
-        std::cerr << "missing KALSHI_API_KEY in .env\n";
-        return 1;
-    }
-    if (pem_path.empty()) {
-        std::cerr << "missing KALSHI_PRIVATE_KEY_PATH in .env\n";
-        return 1;
-    }   
+static bool kalshiSignHeaders(ix::WebSocketHttpHeaders& headers,
+                              const std::string& key_id,
+                              const std::string& pem_path) {
     std::ifstream pem_file(pem_path);
     if (!pem_file) {
         std::cerr << "could not open pem file\n";
-        return 1;
+        return false;
     }
     BIO* bio = BIO_new_file(pem_path.c_str(), "r");
     if (!bio) {
         std::cerr << "BIO_new_file failed\n";
-        return 1;
+        return false;
     }
     EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
     if (!pkey) {
         std::cerr << "could not parse pem\n";
         ERR_print_errors_fp(stderr);
-        return 1;
-}
+        return false;
+    }
+
+    std::string ts = std::to_string(nextKalshiTimestamp());
     headers["KALSHI-ACCESS-KEY"] = key_id;
-    std::cout << "key_id length: " << key_id.size() << "\n";
-
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()
-    ).count();
-    std::string ts = std::to_string(ms);
     headers["KALSHI-ACCESS-TIMESTAMP"] = ts;
-
     std::string to_sign = ts + "GET" + "/trade-api/ws/v2";
 
     EVP_MD_CTX* md_ctx = EVP_MD_CTX_new();
@@ -92,7 +59,7 @@ bool startKalshiWebsocket(MarketData& md, std::unordered_map<std::string, long i
         ERR_print_errors_fp(stderr);
         EVP_MD_CTX_free(md_ctx);
         EVP_PKEY_free(pkey);
-        return 1;
+        return false;
     }
 
     size_t sig_len = 0;
@@ -101,7 +68,7 @@ bool startKalshiWebsocket(MarketData& md, std::unordered_map<std::string, long i
         ERR_print_errors_fp(stderr);
         EVP_MD_CTX_free(md_ctx);
         EVP_PKEY_free(pkey);
-        return 1;
+        return false;
     }
     std::vector<unsigned char> sig(sig_len);
     if (EVP_DigestSignFinal(md_ctx, sig.data(), &sig_len) != 1) {
@@ -109,11 +76,10 @@ bool startKalshiWebsocket(MarketData& md, std::unordered_map<std::string, long i
         ERR_print_errors_fp(stderr);
         EVP_MD_CTX_free(md_ctx);
         EVP_PKEY_free(pkey);
-        return 1;
+        return false;
     }
     EVP_MD_CTX_free(md_ctx);
-
-    std::cout << "sig bytes: " << sig.size() << "\n";
+    EVP_PKEY_free(pkey);
 
     std::string signature(((sig.size() + 2) / 3) * 4, '\0');
     int n = EVP_EncodeBlock(
@@ -125,47 +91,81 @@ bool startKalshiWebsocket(MarketData& md, std::unordered_map<std::string, long i
     headers["KALSHI-ACCESS-SIGNATURE"] = signature;
     headers["Host"] = kalshiWsHost();
     headers["Origin"] = kalshiWsOrigin();
-    std::cout << "to_sign: [" << to_sign << "] " << unixMsUtc(ms) << "\n";
+    return true;
+}
 
-    webSocket.setUrl(kalshiWsUrl());
-    webSocket.disablePerMessageDeflate();
-    webSocket.disableAutomaticReconnection();
-    webSocket.setHandshakeTimeout(15);
-    webSocket.setExtraHeaders(headers);
-    webSocket.setOnMessageCallback([&webSocket, &md, &kalshi_ids, on_tick](const ix::WebSocketMessagePtr& msg) {
-    if (msg->type == ix::WebSocketMessageType::Open) {
-        std::cout << "open\n";
-        nlohmann::json names = nlohmann::json::array();
-        for (const auto& kv : kalshi_ids) {
-            names.push_back(kv.first);
-        }
-        nlohmann::json sub;
-        sub["id"] = 1;
-        sub["cmd"] = "subscribe";
-        sub["params"]["send_initial_snapshot"] = true;
-        sub["params"]["channels"] = nlohmann::json::array({"ticker"});
-        sub["params"]["market_tickers"] = names;
-        webSocket.send(sub.dump());
-    } else if (msg->type == ix::WebSocketMessageType::Error) {
-        std::cout << "error: " << msg->errorInfo.reason << "\n";
-    } else if (msg->type == ix::WebSocketMessageType::Message) {
-        latencyArrive();
-        ParsedBook book = parseKalshiTickerJson(msg->str);
-        if (!book.ok) return;
-        auto it = kalshi_ids.find(book.id);
-        if (it == kalshi_ids.end()) return;
-        long int venue_id = it->second;
-        float no_bid = 1.0f - book.yes_ask;
-        float no_ask = 1.0f - book.yes_bid;
-        md.price_update(venue_id, Kalshi, book.yes_bid, book.yes_ask, no_bid, no_ask,
-            book.yes_bid_n, book.yes_ask_n, book.yes_ask_n, book.yes_bid_n);
-        latencyParsed();
-        if (on_tick) on_tick(md, venue_id);
+bool startKalshiWebsocket(MarketData& md, std::unordered_map<std::string, long int>& kalshi_ids, void (*on_tick)(MarketData&, long int)) {
+    ix::initNetSystem();
+
+    std::string key_id = envValue("KALSHI_API_KEY");
+    std::string pem_path = envValue("KALSHI_PRIVATE_KEY_PATH");
+    if (key_id.empty()) {
+        std::cerr << "missing KALSHI_API_KEY\n";
+        return false;
     }
-    });
+    if (pem_path.empty()) {
+        std::cerr << "missing KALSHI_PRIVATE_KEY_PATH\n";
+        return false;
+    }
 
-    webSocket.start();
+    std::atomic<int> backoff_ms{1000};
     while (true) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        ix::WebSocket webSocket;
+        ix::WebSocketHttpHeaders headers;
+        if (!kalshiSignHeaders(headers, key_id, pem_path)) {
+            int wait = backoff_ms.load();
+            monitorLog("kalshi sign failed, retry in " + std::to_string(wait) + "ms");
+            std::this_thread::sleep_for(std::chrono::milliseconds(wait));
+            backoff_ms.store(nextWsBackoffMs(wait));
+            continue;
+        }
+
+        webSocket.setUrl(kalshiWsUrl());
+        webSocket.disablePerMessageDeflate();
+        webSocket.disableAutomaticReconnection();
+        webSocket.setHandshakeTimeout(15);
+        webSocket.setExtraHeaders(headers);
+        webSocket.setOnMessageCallback([&webSocket, &md, &kalshi_ids, on_tick, &backoff_ms](const ix::WebSocketMessagePtr& msg) {
+            if (msg->type == ix::WebSocketMessageType::Open) {
+                backoff_ms.store(1000);
+                monitorLog("kalshi open");
+                nlohmann::json names = nlohmann::json::array();
+                for (const auto& kv : kalshi_ids) {
+                    names.push_back(kv.first);
+                }
+                nlohmann::json sub;
+                sub["id"] = 1;
+                sub["cmd"] = "subscribe";
+                sub["params"]["send_initial_snapshot"] = true;
+                sub["params"]["channels"] = nlohmann::json::array({"ticker"});
+                sub["params"]["market_tickers"] = names;
+                webSocket.send(sub.dump());
+            } else if (msg->type == ix::WebSocketMessageType::Close) {
+                monitorLog("kalshi closed");
+            } else if (msg->type == ix::WebSocketMessageType::Error) {
+                monitorLog(std::string("kalshi error: ") + msg->errorInfo.reason);
+            } else if (msg->type == ix::WebSocketMessageType::Message) {
+                latencyArrive();
+                ParsedBook book = parseKalshiTickerJson(msg->str);
+                if (!book.ok) return;
+                auto it = kalshi_ids.find(book.id);
+                if (it == kalshi_ids.end()) return;
+                long int venue_id = it->second;
+                int no_bid = complementCents(book.yes_ask);
+                int no_ask = complementCents(book.yes_bid);
+                md.price_update(venue_id, Kalshi, book.yes_bid, book.yes_ask, no_bid, no_ask,
+                    book.yes_bid_n, book.yes_ask_n, book.yes_ask_n, book.yes_bid_n);
+                latencyParsed();
+                if (on_tick) on_tick(md, venue_id);
+            }
+        });
+
+        webSocket.start();
+        waitUntilWsClosed(webSocket);
+        webSocket.stop();
+        int wait = backoff_ms.load();
+        monitorLog("kalshi reconnect in " + std::to_string(wait) + "ms");
+        std::this_thread::sleep_for(std::chrono::milliseconds(wait));
+        backoff_ms.store(nextWsBackoffMs(wait));
     }
 }

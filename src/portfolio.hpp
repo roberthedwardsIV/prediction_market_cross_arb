@@ -7,26 +7,33 @@ struct Position {
     long int market_id;
     int yes_count;
     int no_count;
-    float average_yes_price;
-    float average_no_price;
+    int average_yes_price;
+    int average_no_price;
+    int yes_venue;
+    int no_venue;
 
-    Position() { market_id = yes_count = no_count = 0; average_yes_price = average_no_price = 0.00; }
+    Position() {
+        market_id = yes_count = no_count = 0;
+        average_yes_price = average_no_price = 0;
+        yes_venue = no_venue = 0;
+    }
 
     Position(long int id, int yes, int no) {
         market_id = id;
         yes_count = yes;
         no_count = no;
-        average_yes_price = average_no_price = 0.00;
+        average_yes_price = average_no_price = 0;
+        yes_venue = no_venue = 0;
     }
 };
 
 struct Portfolio {
     Position portfolio_[16];
     int position_count_;
-    float kalshi_cash, kalshi_exposure;
-    float polymarket_cash, polymarket_exposure;
-    float gemini_cash, gemini_exposure;
-    float kalshi_reserved, polymarket_reserved, gemini_reserved;
+    int kalshi_cash, kalshi_exposure;
+    int polymarket_cash, polymarket_exposure;
+    int gemini_cash, gemini_exposure;
+    int kalshi_reserved, polymarket_reserved, gemini_reserved;
     long int getPositionMarketId(long int marketId) { return marketId; }
 
     Position positionFor(long int market_id) const {
@@ -36,35 +43,35 @@ struct Portfolio {
         return Position();
     }
 
-    float venueCashGross(int venue) const {
+    int venueCashGross(int venue) const {
         if (venue == Kalshi) return kalshi_cash;
         if (venue == Polymarket) return polymarket_cash;
         if (venue == Gemini) return gemini_cash;
-        return 0.0f;
+        return 0;
     }
 
-    float venueReserved(int venue) const {
+    int venueReserved(int venue) const {
         if (venue == Kalshi) return kalshi_reserved;
         if (venue == Polymarket) return polymarket_reserved;
         if (venue == Gemini) return gemini_reserved;
-        return 0.0f;
+        return 0;
     }
 
-    float venueCash(int venue) const {
-        float spendable = venueCashGross(venue) - venueReserved(venue);
-        return spendable > 0.0f ? spendable : 0.0f;
+    int venueCash(int venue) const {
+        int spendable = venueCashGross(venue) - venueReserved(venue);
+        return spendable > 0 ? spendable : 0;
     }
 
-    float venueExposure(int venue) const {
+    int venueExposure(int venue) const {
         if (venue == Kalshi) return kalshi_exposure;
         if (venue == Polymarket) return polymarket_exposure;
         if (venue == Gemini) return gemini_exposure;
-        return 0.0f;
+        return 0;
     }
 
-    float totalCash() const { return kalshi_cash + polymarket_cash + gemini_cash; }
-    float totalReserved() const { return kalshi_reserved + polymarket_reserved + gemini_reserved; }
-    float totalExposure() const { return kalshi_exposure + polymarket_exposure + gemini_exposure; }
+    int totalCash() const { return kalshi_cash + polymarket_cash + gemini_cash; }
+    int totalReserved() const { return kalshi_reserved + polymarket_reserved + gemini_reserved; }
+    int totalExposure() const { return kalshi_exposure + polymarket_exposure + gemini_exposure; }
 };
 
 class PortfolioManager {
@@ -78,75 +85,74 @@ class PortfolioManager {
         return it->second;
     }
 
-    void addExposure(int venue, float amount) {
+    void addExposure(int venue, int amount) {
         if (venue == Kalshi) local_book.kalshi_exposure += amount;
         else if (venue == Polymarket) local_book.polymarket_exposure += amount;
         else if (venue == Gemini) local_book.gemini_exposure += amount;
     }
 
-    void addCash(int venue, float amount) {
+    void addCash(int venue, int amount) {
         if (venue == Kalshi) local_book.kalshi_cash += amount;
         else if (venue == Polymarket) local_book.polymarket_cash += amount;
         else if (venue == Gemini) local_book.gemini_cash += amount;
     }
 
-    float* reservedPtr(int venue) {
+    int* reservedPtr(int venue) {
         if (venue == Kalshi) return &local_book.kalshi_reserved;
         if (venue == Polymarket) return &local_book.polymarket_reserved;
         if (venue == Gemini) return &local_book.gemini_reserved;
         return nullptr;
     }
 
-    float cashOf(int venue) const {
+    int cashOf(int venue) const {
         if (venue == Kalshi) return local_book.kalshi_cash;
         if (venue == Polymarket) return local_book.polymarket_cash;
         if (venue == Gemini) return local_book.gemini_cash;
-        return 0.0f;
+        return 0;
     }
 
-    bool tryReserveUnlocked(int venue, float amount) {
-        if (amount <= 0.0f) return true;
-        float* reserved = reservedPtr(venue);
+    bool tryReserveUnlocked(int venue, int amount) {
+        if (amount <= 0) return true;
+        int* reserved = reservedPtr(venue);
         if (!reserved) return false;
         if (cashOf(venue) - *reserved < amount) return false;
         *reserved += amount;
         return true;
     }
 
-    void releaseReserveUnlocked(int venue, float amount) {
-        if (amount <= 0.0f) return;
-        float* reserved = reservedPtr(venue);
+    void releaseReserveUnlocked(int venue, int amount) {
+        if (amount <= 0) return;
+        int* reserved = reservedPtr(venue);
         if (!reserved) return;
         *reserved -= amount;
-        if (*reserved < 0.0f) *reserved = 0.0f;
+        if (*reserved < 0) *reserved = 0;
     }
 
-    static void blendLot(int& count, float& avg_price, int add, float add_price) {
+    static void blendLot(int& count, int& avg_price, int add, int add_price) {
         if (add <= 0) return;
-        float old_count = static_cast<float>(count);
-        float total = old_count + static_cast<float>(add);
-        if (total > 0) {
-            avg_price = ((old_count / total) * avg_price) + ((static_cast<float>(add) / total) * add_price);
-        }
+        long long total = static_cast<long long>(count) + add;
+        long long num = static_cast<long long>(count) * avg_price
+            + static_cast<long long>(add) * add_price;
+        avg_price = static_cast<int>((num + total / 2) / total);
         count += add;
     }
 
     public:
         PortfolioManager() {
-            local_book.kalshi_cash = local_book.kalshi_exposure = 0.00;
-            local_book.polymarket_cash = local_book.polymarket_exposure = 0.00;
-            local_book.gemini_cash = local_book.gemini_exposure = 0.00;
-            local_book.kalshi_reserved = local_book.polymarket_reserved = local_book.gemini_reserved = 0.00;
+            local_book.kalshi_cash = local_book.kalshi_exposure = 0;
+            local_book.polymarket_cash = local_book.polymarket_exposure = 0;
+            local_book.gemini_cash = local_book.gemini_exposure = 0;
+            local_book.kalshi_reserved = local_book.polymarket_reserved = local_book.gemini_reserved = 0;
             local_book.position_count_ = 0;
         }
 
-        bool tryReserve(int venue, float amount) {
-            if (amount <= 0.0f) return true;
+        bool tryReserve(int venue, int amount) {
+            if (amount <= 0) return true;
             std::lock_guard<std::mutex> lock(mtx_);
             return tryReserveUnlocked(venue, amount);
         }
 
-        bool tryReserveTwo(int venue_a, float amount_a, int venue_b, float amount_b) {
+        bool tryReserveTwo(int venue_a, int amount_a, int venue_b, int amount_b) {
             std::lock_guard<std::mutex> lock(mtx_);
             if (venue_a == venue_b) {
                 return tryReserveUnlocked(venue_a, amount_a + amount_b);
@@ -159,13 +165,13 @@ class PortfolioManager {
             return true;
         }
 
-        void releaseReserve(int venue, float amount) {
-            if (amount <= 0.0f) return;
+        void releaseReserve(int venue, int amount) {
+            if (amount <= 0) return;
             std::lock_guard<std::mutex> lock(mtx_);
             releaseReserveUnlocked(venue, amount);
         }
 
-        void releaseReserveTwo(int venue_a, float amount_a, int venue_b, float amount_b) {
+        void releaseReserveTwo(int venue_a, int amount_a, int venue_b, int amount_b) {
             std::lock_guard<std::mutex> lock(mtx_);
             if (venue_a == venue_b) {
                 releaseReserveUnlocked(venue_a, amount_a + amount_b);
@@ -175,73 +181,99 @@ class PortfolioManager {
             releaseReserveUnlocked(venue_b, amount_b);
         }
 
-        void setKalshiCash(float v) {
+        void setKalshiCash(int v) {
             std::lock_guard<std::mutex> lock(mtx_);
             local_book.kalshi_cash = v;
         }
 
-        void setPolymarketCash(float v) {
+        void setPolymarketCash(int v) {
             std::lock_guard<std::mutex> lock(mtx_);
             local_book.polymarket_cash = v;
         }
 
-        void setGeminiCash(float v) {
+        void setGeminiCash(int v) {
             std::lock_guard<std::mutex> lock(mtx_);
             local_book.gemini_cash = v;
         }
 
-        float kalshiCash() {
+        int kalshiCash() {
             std::lock_guard<std::mutex> lock(mtx_);
             return local_book.kalshi_cash;
         }
 
-        float polymarketCash() {
+        int polymarketCash() {
             std::lock_guard<std::mutex> lock(mtx_);
             return local_book.polymarket_cash;
         }
 
-        float geminiCash() {
+        int geminiCash() {
             std::lock_guard<std::mutex> lock(mtx_);
             return local_book.gemini_cash;
         }
 
-        float totalCash() {
+        int totalCash() {
             std::lock_guard<std::mutex> lock(mtx_);
             return local_book.kalshi_cash + local_book.polymarket_cash + local_book.gemini_cash;
         }
 
-        void addVenueLot(long int market_id, int venue, int yes, int no, float avg_yes, float avg_no) {
+        void addVenueLot(long int market_id, int venue, int yes, int no, int avg_yes, int avg_no) {
             int slot = slotFor(market_id);
             if (slot < 0) return;
             std::lock_guard<std::mutex> lock(mtx_);
             Position& pos = local_book.portfolio_[slot];
             if (yes > 0) {
                 blendLot(pos.yes_count, pos.average_yes_price, yes, avg_yes);
+                pos.yes_venue = venue;
                 addExposure(venue, yes * avg_yes);
             }
             if (no > 0) {
                 blendLot(pos.no_count, pos.average_no_price, no, avg_no);
+                pos.no_venue = venue;
                 addExposure(venue, no * avg_no);
             }
         }
 
         FillApply updatePortfolio(Fill order_fill) {
-            if (order_fill.market_id == 0 || order_fill.venue_id == 0 || order_fill.size <= 0 || !order_fill.buy) {
+            if (order_fill.market_id == 0 || order_fill.venue_id == 0 || order_fill.size <= 0) {
                 return FillApply::Ignored;
             }
             int slot = slotFor(order_fill.market_id);
             if (slot < 0) return FillApply::Unregistered;
-            float fees = takerFee(order_fill.venue, order_fill.price, order_fill.size);
-            float spent = (order_fill.size * order_fill.price) + fees;
+            int fees = takerFee(order_fill.venue, order_fill.price, order_fill.size);
             std::lock_guard<std::mutex> lock(mtx_);
             Position& pos = local_book.portfolio_[slot];
-            if (order_fill.side == YesSided) {
-                blendLot(pos.yes_count, pos.average_yes_price, order_fill.size, order_fill.price);
-            } else if (order_fill.side == NoSided) {
-                blendLot(pos.no_count, pos.average_no_price, order_fill.size, order_fill.price);
+            if (order_fill.buy) {
+                int spent = (order_fill.size * order_fill.price) + fees;
+                if (order_fill.side == YesSided) {
+                    blendLot(pos.yes_count, pos.average_yes_price, order_fill.size, order_fill.price);
+                    pos.yes_venue = order_fill.venue;
+                } else if (order_fill.side == NoSided) {
+                    blendLot(pos.no_count, pos.average_no_price, order_fill.size, order_fill.price);
+                    pos.no_venue = order_fill.venue;
+                }
+                addCash(order_fill.venue, -spent);
+                addExposure(order_fill.venue, spent);
+                return FillApply::Applied;
             }
-            addCash(order_fill.venue, -spent);
-            addExposure(order_fill.venue, spent);
+            int& count = (order_fill.side == YesSided) ? pos.yes_count : pos.no_count;
+            int& avg = (order_fill.side == YesSided) ? pos.average_yes_price : pos.average_no_price;
+            int& held_venue = (order_fill.side == YesSided) ? pos.yes_venue : pos.no_venue;
+            int sell = order_fill.size;
+            if (sell > count) sell = count;
+            if (sell < 1) return FillApply::Ignored;
+            int cost_basis = sell * avg;
+            count -= sell;
+            if (count == 0) {
+                avg = 0;
+                held_venue = 0;
+            }
+            bool kalshi_cover_no = (order_fill.venue == Kalshi && order_fill.side == NoSided);
+            if (kalshi_cover_no) {
+                addCash(order_fill.venue, -(sell * order_fill.price + fees));
+            } else {
+                addCash(order_fill.venue, sell * order_fill.price - fees);
+            }
+            addExposure(order_fill.venue, -cost_basis);
             return FillApply::Applied;
         }
 

@@ -1,25 +1,34 @@
 #include <gtest/gtest.h>
 #include "strategy.hpp"
+#include "money.hpp"
 
 TEST(Fees, KalshiKnown) {
-    // fee = ceil(0.07 * n * p * (1-p) * 100) / 100
-    // n=1, p=0.50 → ceil(1.75) / 100 = 0.02
-    EXPECT_FLOAT_EQ(takerFee(Kalshi, 0.50f, 1), 0.02f);
+    // n=1, p=50 -> ceil(1.75) = 2 cents
+    EXPECT_EQ(takerFee(Kalshi, 50, 1), 2);
 }
 
 TEST(Fees, PolymarketKnown) {
-    // round(0.06 * 1 * 0.5 * 0.5 * 100) / 100 = round(1.5)/100 = 0.02
-    EXPECT_FLOAT_EQ(takerFee(Polymarket, 0.50f, 1), 0.02f);
+    // round(1.5) = 2 cents
+    EXPECT_EQ(takerFee(Polymarket, 50, 1), 2);
 }
 
 TEST(Fees, GeminiKnown) {
-    // round(0.05 * 1 * min(0.5,0.5) * 100) / 100 = 0.03
-    EXPECT_FLOAT_EQ(takerFee(Gemini, 0.50f, 1), 0.03f);
+    // round(2.5) = 3 cents
+    EXPECT_EQ(takerFee(Gemini, 50, 1), 3);
 }
 
 TEST(Fees, ClampsLowPrice) {
-    // p clamped to 0.01 before fee math
-    float a = takerFee(Kalshi, 0.00f, 1);
-    float b = takerFee(Kalshi, 0.01f, 1);
-    EXPECT_FLOAT_EQ(a, b);
+    EXPECT_EQ(takerFee(Kalshi, 0, 1), takerFee(Kalshi, 1, 1));
+}
+
+TEST(Money, ParseCents) {
+    EXPECT_EQ(parseCents("0.40"), 40);
+    EXPECT_EQ(parseCents("100"), 10000);
+    EXPECT_EQ(parseCents("3.25"), 325);
+    EXPECT_EQ(parseCents("0.507"), 51);
+    EXPECT_EQ(parseCents("0.4"), 40);
+    EXPECT_EQ(parsePct("0.70", 0), 70);
+    EXPECT_EQ(parsePct("70", 0), 70);
+    EXPECT_EQ(formatCents(40), "0.40");
+    EXPECT_EQ(formatCents(10000), "100.00");
 }

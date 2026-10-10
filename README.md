@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/roberthedwardsIV/prediction_market_cross_arb/actions/workflows/ci.yml/badge.svg)](https://github.com/roberthedwardsIV/prediction_market_cross_arb/actions/workflows/ci.yml)
 
-Assisi watches Kalshi, Polymarket (US), and Gemini prediction-market books for yes+no pairs that still pay under $1 after taker fees. C++17, ixwebsocket, no kernel bypass. Paper and replay are the default; live orders require `ASSISI_LIVE=1`.
+Assisi watches Kalshi, Polymarket, and Gemini prediction-market books for yes+no pairs that still pay under $1 after taker fees. C++17, ixwebsocket, no kernel bypass. Paper and replay are the default; live orders require `ASSISI_LIVE=1`.
 
 ## Quick Start
 
@@ -28,26 +28,26 @@ Run from the repo root. The process reads `markets.csv` and `ui/index.html` rela
 | Mode | CLI | UI | Orders |
 | --- | --- | --- | --- |
 | Replay | `--replay <tape.csv>` | Mode → Replay, pick a tape, Start | Never. Paper fills on a recorded tape. |
-| Clock | `--clock` | Mode → Clock, Start | Never. Live public feeds, no sends. |
+| Clock | `--clock` | Mode → Clock, Start | Never. Live public feeds, no sends, even if `ASSISI_LIVE=1`. |
 | Paper | `--trade` with `ASSISI_LIVE` unset | Mode → Paper, Start | Simulated fills only. |
 | Live | `--trade` with `ASSISI_LIVE=1` | Mode → Live, Start | Real REST orders. Same sizing path as paper. |
 
 No flags = start the control page on `http://127.0.0.1:8787` and wait. `--record [path]` writes a tape while feeds run (default `ticks.csv`).
 
-Live is off unless `ASSISI_LIVE` is exactly `1` at launch. The UI cannot enable it; without that env var the Live option is disabled and the server returns 403. After a UI replay the portfolio holds paper fills, so Paper / Clock / Live are refused (409) until the process restarts.
+Live is off unless `ASSISI_LIVE` is exactly `1` at launch. The UI cannot enable it; without that env var the Live option is disabled and the server returns 403. `--clock` wins over `ASSISI_LIVE` and never places an order. Stop on the page refuses new pairs (same halt as the kill switch). After a UI replay the portfolio holds paper fills, so Paper / Clock / Live are refused (409) until the process restarts.
 
-Keys are read from `.env` in the working directory (not in this repo; see `.env.example`). Names only: `KALSHI_API_KEY`, `KALSHI_PRIVATE_KEY_PATH`, `KALSHI_ENV` (`prod` vs demo), `POLYMARKET_KEY_ID`, `POLYMARKET_SECRET_KEY`, `GEMINI_API_KEY`, `GEMINI_API_SECRET`, optional `GEMINI_ENV=sandbox`.
+Keys are read from `.env` in the working directory (not in this repo; see `.env.example`). Names only: `KALSHI_API_KEY`, `KALSHI_PRIVATE_KEY_PATH`, `KALSHI_ENV` (`prod` vs demo), `POLYMARKET_KEY_ID`, `POLYMARKET_SECRET_KEY`, `GEMINI_API_KEY`, `GEMINI_API_SECRET`, optional `GEMINI_ACCOUNT` (defaults to `primary`) and `GEMINI_ENV=sandbox`.
 
 ## How it decides size
 
 Same path for paper, replay, and live.
 
-1. **Strategy** — If cheapest yes + cheapest no + taker fees at **n = 1** is under $1, propose `size = 70%` of the thinner top-of-book ask (`min(yes_ask_n, no_ask_n)`), same on both legs. Below one contract → no order. (Kalshi’s ceil fee at n = 1 overestimates per-contract cost for larger n, so this screen is conservative on that venue.)
+1. **Strategy** — If cheapest yes + cheapest no + taker fees at **n = 1** is under 100 cents, propose `size = 70%` of the thinner top-of-book ask (`min(yes_ask_n, no_ask_n)`), same on both legs. Below one contract → no order. (Kalshi’s ceil fee at n = 1 overestimates per-contract cost for larger n, so this screen is conservative on that venue.) Prices, cash, and fees are **integer cents** (`src/money.hpp`). Wire/tape dollars are parsed on the way in.
 2. **Risk** — Shrinks both legs together (closed-form per limit, then a cent-rounding guard) against, in order: per-market contract cap, venue cash (gross − in-flight reserved), venue reserve, total allocation, per-market equity share. Then **rechecks** `cost(yes) + cost(no) < size` at the final n; shrinks until it holds or rejects `BelowMinEdge`. Every reject is logged with a `RiskReason`.
-3. **Live only** — Before a detached send, CAS on a global `live_working` gate and **reserve** venue cash for the pair (or missing leg). Release the reserved amount when the send finishes (using the pre-chase prices). A second market cannot spend the same dollars while the first is in flight. Paper/replay do not reserve.
-4. **Chase** — On a miss, bump +$0.01 only up to a **chase ceiling**: largest cent price where other-leg price + chase + fees(n=1) + `chase_reserve` still fit under $1. Exhausted chase logs and leaves you directional; there is no unwind/cancel-replace.
-5. **Fills** — Venue responses must report a fill count; missing/zero count is no fill (parsers never invent `idea.size`). Paper fills come only from the local `Execute` path. Fills for unregistered markets are rejected and logged (`Unregistered`), with no cash debit.
-6. **Kill switch** — Cumulative taker fees on applied fills trip `max_drawdown` (default $10). Sticky until process restart; also sets the UI halt. Manual Stop still works.
+3. **Live only** — One busy flag per market: House GOP and Senate GOP can both send in the same second; the same market cannot start a second job while the first is still going. Before the send, we set aside that market’s cash on each exchange and give it back when the job ends (at the pre-chase prices). Two markets still cannot spend the same Kalshi (or Polymarket, or Gemini) dollars twice. Kalshi and Polymarket request clocks bump if two signs land in the same millisecond (Gemini already did this). The control page shows `Working (N)`. Paper and replay do not set aside cash and do not use the busy flags.
+4. **Second-leg chase, then flatten** — If the second buy misses, bump that buy +$0.01 only up to a chase ceiling. We do not buy a larger missing side later. If the pair is still one-sided (live or paper), sell the leftover at 1 cent. Kalshi leftover NO is closed by buying YES at up to 99 cents (Kalshi is a yes book). If that dump misses, the log says we are still directional.
+5. **Fills** — Venue responses must report a fill count; missing/zero count is no fill (parsers never invent `idea.size`). Paper fills come only from the local `Execute` path. Buys debit cash and raise counts; sells credit cash and drop counts (Kalshi NO flatten spends the YES price plus fee). Fills for unregistered markets are rejected and logged (`Unregistered`), with no cash change.
+6. **Kill switch** — Cumulative taker fees on applied fills trip `max_drawdown` (default $10). Sticky until process restart; also sets the UI halt. Manual Stop does the same halt.
 
 Cash is venue-derived only: Kalshi + Polymarket + Gemini (HTTP-refreshed live; seeded at $100 each in replay). No separate internal ledger.
 
@@ -57,12 +57,12 @@ Resolved at startup and logged (`risk limits ...`). Defaults match the values be
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `ASSISI_RISK_MAX_MARKET_PCT` | `0.70` | Max share of total equity in one market |
-| `ASSISI_RISK_MAX_ALLOCATION_PCT` | `0.80` | Max (exposure + new spend) / cash |
-| `ASSISI_RISK_VENUE_RESERVE_PCT` | `0.10` | Keep this fraction of venue equity unspent |
+| `ASSISI_RISK_MAX_MARKET_PCT` | `0.70` or `70` | Max share of total equity in one market |
+| `ASSISI_RISK_MAX_ALLOCATION_PCT` | `0.80` or `80` | Max (exposure + new spend) / cash |
+| `ASSISI_RISK_VENUE_RESERVE_PCT` | `0.10` or `10` | Keep this fraction of venue equity unspent |
 | `ASSISI_RISK_MAX_CONTRACTS` | `100` | Cap on yes+no contracts per market |
-| `ASSISI_RISK_CHASE_RESERVE` | `0.01` | Dollars of edge to keep when chasing |
-| `ASSISI_RISK_MAX_DRAWDOWN` | `10.0` | Kill switch on cumulative fees ($) |
+| `ASSISI_RISK_CHASE_RESERVE` | `0.01` | Dollars of edge to keep when chasing (stored as 1 cent) |
+| `ASSISI_RISK_MAX_DRAWDOWN` | `10.0` | Kill switch on cumulative fees (stored as 1000 cents) |
 
 ## Latency
 
@@ -88,14 +88,17 @@ Local result (Intel i5-8257U laptop, macOS, Release): bench p50 ≈ 183 ns, p99 
 
 ## Tests
 
-gtest (fees, strategy, risk, portfolio, tape, WS JSON fixtures). Risk covers shrink-to-fit per venue, reservation vs double-spend, chase ceiling, final-size edge, kill switch, and `ASSISI_RISK_*` loading. `tests/fixtures/` holds raw Kalshi/Polymarket book JSON so nested Polymarket qty parsing cannot silently regress to inventing size 1. GitHub Actions runs the suite on Ubuntu on every push.
+gtest (fees, strategy, risk, portfolio, tape, busy flags, request clocks, reconnect backoff, WS JSON fixtures). Risk covers shrink-to-fit per venue, two markets reserving at once, reservation vs double-spend, chase ceiling, final-size edge, kill switch, and `ASSISI_RISK_*` loading. Portfolio covers sell cash-back and Kalshi NO cover. `tests/fixtures/` holds raw Kalshi/Polymarket book JSON so nested Polymarket qty parsing cannot silently regress to inventing size 1. GitHub Actions builds `assisi` and `assisi_tests` on Ubuntu and runs the suite on every push.
 
 ## Layout
 
-- `src/main.cpp` — wire-up, flags, paper vs live send, replay, chase, fill apply
+- `src/main.cpp` — wire-up, flags, paper vs live send, replay, flatten leftover, fill apply
+- `src/money.hpp` — integer cents parse/format; no `float` on the money path
 - `src/strategy.hpp` — cross-book yes+no, fees at n=1, 70% book participation
+- `src/live_busy.hpp` — one busy flag per market (max 16)
+- `src/ws_backoff.hpp` / `src/ws_reconnect.hpp` — wait-and-retry for dropped price feeds
 - `src/risk.hpp` — limits, fit-to-cap, final-size edge, reserve/release, chase ceiling, kill switch, env load
-- `src/portfolio.hpp` — positions, venue cash / exposure / reserved
+- `src/portfolio.hpp` — positions, buys and sells, venue cash / exposure / reserved
 - `src/parse_book.hpp` / `src/json_find.hpp` — WS book/ticker parse (shared with tests)
 - `src/latency.hpp` / `src/tape.hpp` — clocks, tape record and parse
 - `src/market_data.hpp` / `src/execution.hpp` — book state (slot maps), paper fills
@@ -107,13 +110,13 @@ gtest (fees, strategy, risk, portfolio, tape, WS JSON fixtures). Risk covers shr
 
 ## Limitations
 
-- **Global live gate** — One in-flight live pair/leg blocks sends on every other market (`std::atomic` + cash reservation). Per-market gating is not built.
-- **No websocket reconnect** — A dropped feed stays dead until process restart.
+- **One live send per market** — Different markets can send together. The same market cannot. Cash set-aside is still shared across markets on the same exchange.
+- **Feeds reconnect** — If a price feed drops, we wait 1s then 2s, 4s, … up to 30s and connect again. Kalshi and Polymarket sign a fresh clock each try (an old signature would be rejected). On open we subscribe again.
 - **Top-of-book only** — Sizing uses displayed ask size × 70%, not deeper book.
-- **No unwind / cancel-replace** — If chase budget is exhausted after one leg fills, you are directional; the log says so.
-- **Kill switch is fee-based** — Trips on cumulative taker fees vs `max_drawdown`, not mark-to-market P&amp;L (cash + cost-basis exposure is flat on fills).
+- **Half fill is sold, not chased** — If only one side of a pair fills, we dump that leftover at 1 cent (a market-style take). Kalshi leftover NO is closed by buying YES at up to 99 cents (Kalshi is a yes book). If that dump misses, the log says we are still directional.
+- **Kill switch is fee-based** — Trips on cumulative taker fees vs `max_drawdown`, not mark-to-market P&L (cash + cost-basis exposure is flat on fills).
 - **No volatility / inventory sizer** — Caps are contract, cash, reserve, allocation, and market %.
-- **Money is `float`** — Fine at these notionals; not a settlement ledger. Full integer-cents migration is not done.
+- **Integer cents, not a settlement ledger** — Prices, cash, fees, and averages are `int` cents. Venue JSON is still decimal dollars on the wire.
 - **Universe is static** — `markets.csv`, max 16 rows, no hot reload; linking across venues is manual.
 - **Detached live threads** — No join on shutdown; intent latency excludes the HTTP order path.
 - **Public websockets / consumer hardware** — On-box intent time is not exchange RTT.

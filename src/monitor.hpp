@@ -11,7 +11,9 @@ void monitorBind(MarketData& md, PortfolioManager& pm,
     const std::unordered_map<long int, std::string>& polymarket,
     const std::unordered_map<long int, std::string>& gemini);
 void monitorLog(const std::string& line);
-void monitorSetWorking(bool v);
+void monitorWorkingBegin();
+void monitorWorkingEnd();
+int monitorWorkingCount();
 void monitorSetTrading(bool v);
 void monitorRequestTrade();
 bool monitorTradeRequested();

@@ -1,11 +1,13 @@
 #include "polymarket_http.hpp"
 #include "kalshi_env.hpp"
+#include "money.hpp"
+#include "json_find.hpp"
 
 #include <fstream>
 #include <iostream>
 #include <chrono>
+#include <cstdlib>
 #include <vector>
-#include <cmath>
 
 #include <openssl/evp.h>
 #include <openssl/err.h>
@@ -67,10 +69,7 @@ PolymarketHttpResult polymarketHttp(const std::string& method, const std::string
         out.error = "missing polymarket key";
         return out;
     }
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()
-    ).count();
-    std::string ts = std::to_string(ms);
+    std::string ts = std::to_string(nextPolymarketTimestamp());
     std::string to_sign = ts + method + sign_path;
     std::string signature;
     if (!signPolymarket(secret_b64, to_sign, signature)) {
@@ -102,19 +101,17 @@ PolymarketHttpResult polymarketHttp(const std::string& method, const std::string
     return out;
 }
 
-static float jsonMoney(const nlohmann::json& j, const char* key) {
+static int jsonMoneyCents(const nlohmann::json& j, const char* key) {
     if (!j.contains(key)) return 0;
-    if (j[key].is_string()) {
-        try { return std::stof(j[key].get<std::string>()); } catch (...) { return 0; }
-    }
-    if (j[key].is_number()) return j[key].get<float>();
+    if (j[key].is_string()) return parseCents(j[key].get<std::string>());
+    if (j[key].is_number()) return parseCents(j[key].dump());
     if (j[key].is_object() && j[key].contains("value")) {
-        return jsonMoney(j[key], "value");
+        return jsonMoneyCents(j[key], "value");
     }
     return 0;
 }
 
-bool refreshPolymarketBalance(float& cash_out) {
+bool refreshPolymarketBalance(int& cash_out) {
     auto r = polymarketHttp("GET", "/v1/account/balances", "");
     if (r.status != 200) {
         std::cout << "polymarket balance " << r.status << " " << r.error << "\n";
@@ -128,15 +125,15 @@ bool refreshPolymarketBalance(float& cash_out) {
                 std::string ccy = b.value("currency", "USD");
                 if (ccy != "USD" && ccy != "usd") continue;
                 if (b.contains("buyingPower")) {
-                    cash_out = jsonMoney(b, "buyingPower");
+                    cash_out = jsonMoneyCents(b, "buyingPower");
                     return true;
                 }
-                cash_out = jsonMoney(b, "currentBalance");
+                cash_out = jsonMoneyCents(b, "currentBalance");
                 return true;
             }
         }
         if (j.contains("buyingPower")) {
-            cash_out = jsonMoney(j, "buyingPower");
+            cash_out = jsonMoneyCents(j, "buyingPower");
             return true;
         }
     } catch (...) {
@@ -147,8 +144,9 @@ bool refreshPolymarketBalance(float& cash_out) {
 static int jsonCount(const nlohmann::json& j, const char* key) {
     if (!j.contains(key)) return 0;
     try {
-        if (j[key].is_number()) return static_cast<int>(std::round(j[key].get<float>()));
-        if (j[key].is_string()) return static_cast<int>(std::round(std::stof(j[key].get<std::string>())));
+        if (j[key].is_string()) return jsonContracts(j[key].get<std::string>());
+        if (j[key].is_number_integer()) return j[key].get<int>();
+        if (j[key].is_number()) return jsonContracts(j[key].dump());
     } catch (...) {}
     return 0;
 }
@@ -174,8 +172,8 @@ bool refreshPolymarketPositions(std::vector<PolymarketLot>& lots) {
             int n = jsonCount(p, "quantity");
             if (n == 0) n = jsonCount(p, "qty");
             if (n == 0) continue;
-            float avg = jsonMoney(p, "avgPx");
-            if (avg == 0) avg = jsonMoney(p, "averagePrice");
+            int avg = jsonMoneyCents(p, "avgPx");
+            if (avg == 0) avg = jsonMoneyCents(p, "averagePrice");
             if (side.find("NO") != std::string::npos || side.find("SHORT") != std::string::npos) {
                 lot.no_count = std::abs(n);
                 lot.avg_no = avg;

@@ -5,6 +5,8 @@
 #include "gemini_order.hpp"
 #include "kalshi_env.hpp"
 #include "gemini_http.hpp"
+#include "money.hpp"
+#include "json_find.hpp"
 
 GeminiOrderResult sendGeminiOrder(std::string symbol, OrderIntent idea) {
     GeminiOrderResult result;
@@ -12,11 +14,9 @@ GeminiOrderResult sendGeminiOrder(std::string symbol, OrderIntent idea) {
     nlohmann::json extra;
     extra["symbol"] = symbol;
     extra["orderType"] = "limit";
-    extra["side"] = "buy";
+    extra["side"] = idea.buy ? "buy" : "sell";
     extra["quantity"] = std::to_string(idea.size);
-    char pbuf[16];
-    std::snprintf(pbuf, sizeof(pbuf), "%.4f", idea.limit_price);
-    extra["price"] = pbuf;
+    extra["price"] = formatCents4(idea.limit_price);
     extra["outcome"] = (idea.side == YesSided) ? "yes" : "no";
     if (assisiLiveOrders()) {
         extra["timeInForce"] = "fill-or-kill";
@@ -34,21 +34,20 @@ GeminiOrderResult sendGeminiOrder(std::string symbol, OrderIntent idea) {
     try {
         nlohmann::json r = nlohmann::json::parse(resp.body);
         if (r.contains("executedQuantity") || r.contains("filledQuantity")) {
-            result.fill_count = r.contains("executedQuantity")
-                ? (r["executedQuantity"].is_string() ? std::stof(r["executedQuantity"].get<std::string>()) : r["executedQuantity"].get<float>())
-                : (r["filledQuantity"].is_string() ? std::stof(r["filledQuantity"].get<std::string>()) : r["filledQuantity"].get<float>());
+            auto q = r.contains("executedQuantity") ? r["executedQuantity"] : r["filledQuantity"];
+            result.fill_count = jsonContracts(q.is_string() ? q.get<std::string>() : q.dump());
         }
         if (r.contains("avgPrice") || r.contains("averagePrice")) {
             auto v = r.contains("avgPrice") ? r["avgPrice"] : r["averagePrice"];
-            result.fill_price = v.is_string() ? std::stof(v.get<std::string>()) : v.get<float>();
+            result.fill_price = parseCents(v.is_string() ? v.get<std::string>() : v.dump());
         }
     } catch (...) {
         return result;
     }
-    if (assisiLiveOrders() && result.fill_count <= 0.0f) {
+    if (assisiLiveOrders() && result.fill_count <= 0) {
         std::cout << "gemini FOK no fill\n";
         return result;
     }
-    result.ok = result.fill_count > 0.0f;
+    result.ok = result.fill_count > 0;
     return result;
 }

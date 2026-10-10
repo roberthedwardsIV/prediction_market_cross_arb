@@ -5,6 +5,8 @@
 #include "kalshi_order.hpp"
 #include "kalshi_env.hpp"
 #include "kalshi_http.hpp"
+#include "money.hpp"
+#include "json_find.hpp"
 
 KalshiOrderResult sendKalshiOrder(std::string ticker, OrderIntent idea) {
     KalshiOrderResult result;
@@ -13,19 +15,21 @@ KalshiOrderResult sendKalshiOrder(std::string ticker, OrderIntent idea) {
     j["ticker"] = ticker;
     j["count"] = std::to_string(idea.size);
 
-    if(idea.side == YesSided) {
-        std::cout << "bid " << idea.limit_price << "\n";
-        j["side"] = "bid";
-        char pbuf[16];
-        std::snprintf(pbuf, sizeof(pbuf), "%.4f", idea.limit_price);
-        j["price"] = pbuf;
-    }
-    if(idea.side == NoSided) {
-        std::cout << "ask " << (1.0f - idea.limit_price) << "\n";
+    if (idea.buy) {
+        if (idea.side == YesSided) {
+            j["side"] = "bid";
+            j["price"] = formatCents4(idea.limit_price);
+        } else {
+            j["side"] = "ask";
+            j["price"] = formatCents4(complementCents(idea.limit_price));
+        }
+    } else if (idea.side == YesSided) {
         j["side"] = "ask";
-        char pbuf[16];
-        std::snprintf(pbuf, sizeof(pbuf), "%.4f", 1.0f - idea.limit_price);
-        j["price"] = pbuf;
+        j["price"] = formatCents4(idea.limit_price);
+    } else {
+        // Flatten NO by buying YES (Kalshi is a yes book).
+        j["side"] = "bid";
+        j["price"] = formatCents4(complementCents(idea.limit_price));
     }
 
     if (assisiLiveOrders()) {
@@ -48,19 +52,19 @@ KalshiOrderResult sendKalshiOrder(std::string ticker, OrderIntent idea) {
         nlohmann::json r = nlohmann::json::parse(resp.body);
         if (r.contains("fill_count")) {
             std::string fcs = r["fill_count"].is_string() ? r["fill_count"].get<std::string>() : r["fill_count"].dump();
-            result.fill_count = std::stof(fcs);
+            result.fill_count = jsonContracts(fcs);
         }
         if (r.contains("average_fill_price") && !r["average_fill_price"].is_null()) {
             std::string fps = r["average_fill_price"].is_string() ? r["average_fill_price"].get<std::string>() : r["average_fill_price"].dump();
-            result.fill_price = std::stof(fps);
+            result.fill_price = parseCents(fps);
         }
     } catch (...) {
         return result;
     }
-    if (assisiLiveOrders() && result.fill_count <= 0.0f) {
+    if (assisiLiveOrders() && result.fill_count <= 0) {
         std::cout << "kalshi FOK no fill\n";
         return result;
     }
-    result.ok = result.fill_count > 0.0f;
+    result.ok = result.fill_count > 0;
     return result;
 }
